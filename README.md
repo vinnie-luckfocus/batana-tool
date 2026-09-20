@@ -39,7 +39,7 @@ python3.12 -m venv .venv
 ```
 
 ```bash
-.venv/bin/pytest                                      # 全部无头测试（107 项，含合成视频端到端与 UI 离屏冒烟）
+.venv/bin/pytest                                      # 全部无头测试（125 项，含合成视频端到端与 UI 离屏）
 .venv/bin/python -m app.main --gen-synth out.mkv      # 生成合成双目测试视频（2560x800 SBS，8px 视差）
 .venv/bin/python -m samples.gen_synth out.mkv --fps 120 --cycles 3
 .venv/bin/python -m app.envcheck --source samples/output/synth_swing.mkv --duration 5   # 无头环境体检（F11）
@@ -84,7 +84,7 @@ app/
 ├── session/           # SessionStore 素材索引、export_session 契约导出与校验
 ├── envcheck/          # F11 环境合规检查（8 项纯函数 + EnvironmentChecker + 无头 CLI）
 └── ui/                # 采集页/审核页/设置页 + 设计系统（theme）+ 采集控制器（线程/信号桥）+ EnvCheckDialog
-tests/                 # 107 项无头测试：核心层 59 项 + 环境检查 41 项 + UI 离屏冒烟 7 项
+tests/                 # 125 项无头测试：核心层 59 项 + 环境检查 41 项 + UI 离屏 25 项
 samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→挥棒→静止，循环）
 ```
 
@@ -101,6 +101,7 @@ samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→�
 | 0.1 | 2026-09-20 | 核心层实现：采集/检测/语音/姿态/会话导出 + 59 项无头测试 + 合成素材生成器（UI 页面待下一里程碑） | 待同步司令塔 repos.yaml |
 | 0.2 | 2026-09-20 | 桌面 UI：采集/审核/设置三页（战术遥测设计系统）、采集控制器线程信号桥、骨架叠加修正/修剪/标记/批量导出、UI 离屏冒烟 7 项（合计 66 项全绿） | 待同步司令塔 repos.yaml |
 | 0.3 | 2026-09-20 | F11 环境合规主动判定（PRD v1.1）：app/envcheck 8 项检查 + 体检执行器 + 无头 CLI，采集页 [ ENV CHECK ] 对话框、采集中光照/频闪持续监测横幅、设置页环境检查阈值区，新增 41 项无头测试（合计 107 项全绿） | 待同步司令塔 repos.yaml |
+| 0.3.1 | 2026-09-20 | UX 评审整改（docs/reviews/2026-09-20-ux-review.md，H1–H5/M1–M5/L1/L3–L5）：状态横幅中文化分色+视觉倒计时、审核标记后自动跳下一条待复核+跳触发帧+Shift 步进/Ctrl+Z、未保存确认、删除素材、启动 rebuild 恢复提示、异常区分相机/存储、落盘独立 worker 线程、骨架左/右/双目选择、ARMED 15s 未检测挥棒语音提示+能量阈值刻度、导出磁盘预检+后台线程进度+core 仓路径可配、ROI 引导回显、MJPEG 警告、采集快捷键（空格/D）、回放 0.25×/0.5× 慢放、重复导出注明覆盖、设置页磁盘占用估算；新增 18 项测试（合计 125 项全绿） | 待同步司令塔 repos.yaml |
 
 ## 许可证
 

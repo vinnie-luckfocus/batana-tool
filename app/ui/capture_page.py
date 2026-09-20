@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import math
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -33,11 +36,15 @@ from app.ui.widgets import (
     TelemetryValue,
     block_widget,
 )
+from app.voice import PROMPT_NO_SWING, error_prompt
 
 _SOURCE_UVC_PREFIX = "UVC 设备 "
 _SOURCE_FILE = "视频文件回放…"
 
 _VIEW_MODES = [("左目", VIEW_LEFT), ("右目", VIEW_RIGHT), ("双目并排", VIEW_SBS)]
+
+ROI_HINT_TEXT = "请先在画面上框选打击区"
+NO_SWING_TIMEOUT_MS = 15000  # M3：ARMED 持续 15s 无挥棒的语音提醒间隔
 
 
 class CapturePage(QWidget):
@@ -58,11 +65,25 @@ class CapturePage(QWidget):
         self.attach_controller(controller or CaptureController(settings, store))
         self.preview.set_roi(settings.roi_tuple())
         self._refresh_counts()
+        self._refresh_roi_hint()
+        self.energy_bar.set_threshold(settings.energy_trigger)
+        # H1 视觉倒计时：跟随 READY 态起始时间在横幅上倒数（不改核心层语义）
+        self._ready_since: float | None = None
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(100)
+        self._countdown_timer.timeout.connect(self._tick_countdown)
+        # M3：ARMED 持续无挥棒 → 语音提示（UI 层定时器，不改状态机）
+        self._no_swing_interval_ms = NO_SWING_TIMEOUT_MS
+        self._no_swing_timer = QTimer(self)
+        self._no_swing_timer.timeout.connect(self._on_no_swing)
         # F11 持续监测：采集中每 5s 用最近 ~1s 帧评估亮度/频闪（纯视觉提示，不打扰语音）
         self._env_timer = QTimer(self)
         self._env_timer.setInterval(5000)
         self._env_timer.timeout.connect(self._monitor_env)
         self._env_timer.start()
+        # L1 快捷键：空格 = 手动开始/结束挥棒，D = 丢弃重拍
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.manual_toggle)
+        QShortcut(QKeySequence(Qt.Key.Key_D), self, activated=self.discard_clip)
 
     # ---- UI 组装 ----
 
@@ -86,10 +107,20 @@ class CapturePage(QWidget):
         body.setSpacing(1)
         root.addLayout(body, stretch=1)
 
-        # 左：预览（ROI 框选区）
+        # 左：预览（ROI 框选区）+ 未框选常显提示（M5 首次引导）
+        left_col = QWidget()
+        left_layout = QVBoxLayout(left_col)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+        self.roi_hint = QLabel(ROI_HINT_TEXT)
+        self.roi_hint.setFont(mono_font(10, bold=True, letter_spacing=1.5))
+        self.roi_hint.setStyleSheet(f"color: {COLORS['accent']};")
+        self.roi_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left_layout.addWidget(self.roi_hint)
         self.preview = PreviewWidget()
         self.preview.roi_changed.connect(self._on_roi_changed)
-        body.addWidget(block_widget(self.preview), stretch=3)
+        left_layout.addWidget(self.preview, stretch=1)
+        body.addWidget(block_widget(left_col), stretch=3)
 
         # 右：状态面板 + 控制
         side = QVBoxLayout()
@@ -146,15 +177,17 @@ class CapturePage(QWidget):
         ctl.addWidget(self.btn_start)
 
         row = QHBoxLayout()
-        self.btn_manual_start = QPushButton("手动开始挥棒")
-        self.btn_manual_stop = QPushButton("手动结束")
+        row.setSpacing(24)  # L1：手动开始/结束拉开间距防误触
+        self.btn_manual_start = QPushButton("手动开始挥棒 [空格]")
+        self.btn_manual_stop = QPushButton("手动结束 [空格]")
         self.btn_manual_start.clicked.connect(lambda: self.controller.manual_start())
         self.btn_manual_stop.clicked.connect(lambda: self.controller.manual_stop())
         row.addWidget(self.btn_manual_start)
         row.addWidget(self.btn_manual_stop)
         ctl.addLayout(row)
 
-        self.btn_discard = QPushButton("丢弃重拍")
+        ctl.addSpacing(12)  # L1：丢弃重拍与手动开始拉开距离防误触
+        self.btn_discard = QPushButton("丢弃重拍 [D]")
         self.btn_discard.clicked.connect(lambda: self.controller.discard())
         ctl.addWidget(self.btn_discard)
 
@@ -222,12 +255,54 @@ class CapturePage(QWidget):
     def _on_preview(self, payload) -> None:
         _idx, _ts, left, right = payload
         self.preview.set_frames(left, right)
+        # M5 首次引导：检测器懒建的默认 ROI 同步回显到预览（不写入设置）
+        if self.preview.roi() is None and self.controller.detector_roi is not None:
+            self.preview.set_roi(self.controller.detector_roi)
 
     def _on_transition(self, transition) -> None:
         state: State = transition.next
         self.state_banner.set_state(state.value, alarm=state is State.ERROR)
         self.status_line.setText(f">>> {transition.prev.value} → {state.value} ({transition.reason})")
         self._refresh_counts()
+        if state is State.READY:
+            # H1：进入 READY 开始视觉倒计时（含 SAVING→READY 的循环重启）
+            self._ready_since = time.monotonic()
+            self._tick_countdown()
+            self._countdown_timer.start()
+        else:
+            self._countdown_timer.stop()
+            self._ready_since = None
+        if state is State.ARMED:
+            self._no_swing_timer.setInterval(self._no_swing_interval_ms)
+            self._no_swing_timer.start()
+        else:
+            self._no_swing_timer.stop()
+
+    def _tick_countdown(self) -> None:
+        """READY 倒计时大号数字（3/2/1）；倒计时结束交给状态机切 ARMED。"""
+        if self._ready_since is None:
+            return
+        remaining = self.settings.countdown_seconds - (time.monotonic() - self._ready_since)
+        n = math.ceil(remaining)
+        self.state_banner.set_countdown(n if 1 <= n <= 9 else None)
+
+    def _on_no_swing(self) -> None:
+        """M3：ARMED 超时未检测到挥棒 → 语音提示（可重复直到离开 ARMED）。"""
+        self.controller.say(PROMPT_NO_SWING, priority=1)
+
+    def manual_toggle(self) -> None:
+        """L1 空格：ARMED 手动开始挥棒 / SWING 手动结束。"""
+        sm = self.controller.state_machine
+        if sm is None:
+            return
+        if sm.state is State.SWING:
+            self.controller.manual_stop()
+        else:
+            self.controller.manual_start()
+
+    def discard_clip(self) -> None:
+        """L1 D 键：丢弃重拍当前进行中片段。"""
+        self.controller.discard()
 
     def _on_telemetry(self, fps: float, ratio: float, energy: float) -> None:
         self.m_fps.set_value(f"{fps:5.1f}")
@@ -236,12 +311,18 @@ class CapturePage(QWidget):
         self.energy_bar.set_value(energy)
 
     def _on_error(self, message: str) -> None:
+        """H5：异常横幅 + 状态栏分类文案（相机断开 / 存储失败 / 通用异常）。"""
         self.state_banner.set_state("ERROR", alarm=True)
-        self.status_line.setText(f">>> ERROR: {message}")
+        self.status_line.setText(f">>> {error_prompt(message)}（{message}）")
 
     def _on_roi_changed(self, x: int, y: int, w: int, h: int) -> None:
         self.controller.update_roi((x, y, w, h))
+        self._refresh_roi_hint()
         self.status_line.setText(f">>> ROI 已保存 ({x},{y} {w}x{h})")
+
+    def _refresh_roi_hint(self) -> None:
+        """M5：未框选 ROI 时常显引导提示，框选后隐藏。"""
+        self.roi_hint.setVisible(self.settings.roi_tuple() is None)
 
     # ---- F11 环境体检 ----
 
@@ -336,7 +417,7 @@ class CapturePage(QWidget):
         """切到视频文件回放源（无相机演示模式）。"""
         self._file_path = path
         was_running = self.controller.running
-        self.controller.stop()
+        self.controller.close()  # 旧控制器整体关停（含落盘 worker 与语音）
         self.controller = CaptureController(
             self.settings, self.store, source=FileSource(path, loop=True)
         )
@@ -358,4 +439,6 @@ class CapturePage(QWidget):
 
     def shutdown(self) -> None:
         self._env_timer.stop()
+        self._countdown_timer.stop()
+        self._no_swing_timer.stop()
         self.controller.close()

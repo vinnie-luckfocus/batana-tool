@@ -19,12 +19,12 @@ from app.detect.presence import PresenceDetector
 from app.detect.swing import SwingDetector
 from app.voice.voice import (
     PROMPT_DISCARDED,
-    PROMPT_ERROR,
     PROMPT_LEFT,
     PROMPT_READY,
     PROMPT_SWING,
     PROMPT_SWING_DONE,
     Voice,
+    error_prompt,
     prompt_saved,
 )
 
@@ -197,9 +197,9 @@ class CaptureStateMachine:
         self._transition(State.IDLE, reason="paused")
 
     def error(self, message: str) -> None:
-        """异常：任意态 → ERROR。"""
+        """异常：任意态 → ERROR。语音按消息分类（相机断开 / 存储失败 / 通用）。"""
         self.last_error = message
-        self._speak(PROMPT_ERROR, priority=2)
+        self._speak(error_prompt(message), priority=2)
         self._transition(State.ERROR, reason=f"error: {message}")
 
     def recover(self) -> None:

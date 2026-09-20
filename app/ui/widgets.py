@@ -55,36 +55,84 @@ class TelemetryValue(QWidget):
         self.value.setText(value.upper())
 
 
+# 状态机状态 → 中文语义（H1：3 米外/静音环境下"现在该做什么"一眼可读）
+STATE_LABELS = {
+    "IDLE": "等待就位",
+    "READY": "请准备",
+    "ARMED": "请挥棒！",
+    "SWING": "录制中",
+    "SAVING": "保存中",
+    "ERROR": "异常",
+}
+
+
 class StateBanner(QLabel):
-    """状态机当前状态大字横幅（结构性大标题字体 + 强调色分割线上沿）。"""
+    """状态机当前状态大字横幅：中文语义 + 分色 + READY 倒计时大号数字。
+
+    分色（受设计系统调色板约束）：IDLE/SAVING 暗灰、READY 亮白、
+    ARMED/ERROR 强调红文字、SWING 红底白字（录制中最强视觉信号）。
+    """
 
     def __init__(self, text: str = "IDLE") -> None:
-        super().__init__(text)
-        self.setFont(header_font(34))
+        super().__init__("")
+        self._state = "IDLE"
+        self._alarm = False
+        self._countdown: int | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setStyleSheet(
-            f"color: {COLORS['fg']}; border-top: 2px solid {COLORS['accent']}; padding: 8px;"
-        )
+        self.set_state(text)
 
-    def set_state(self, text: str, alarm: bool = False) -> None:
-        self.setText(text.upper())
-        color = COLORS["accent"] if alarm else COLORS["fg"]
-        self.setStyleSheet(
-            f"color: {color}; border-top: 2px solid {COLORS['accent']}; padding: 8px;"
-        )
+    def set_state(self, name: str, alarm: bool = False) -> None:
+        """设置状态（英文状态名自动映射中文）；离开 READY 时清除倒计时。"""
+        self._state = name
+        self._alarm = alarm
+        if name != "READY":
+            self._countdown = None
+        self._refresh()
+
+    def set_countdown(self, n: int | None) -> None:
+        """READY 倒计时大号数字（3/2/1）；None 恢复状态文案。"""
+        self._countdown = n
+        self._refresh()
+
+    def _refresh(self) -> None:
+        if self._countdown is not None:
+            self.setFont(header_font(56))
+            self.setText(str(self._countdown))
+        else:
+            self.setFont(header_font(34))
+            self.setText(STATE_LABELS.get(self._state, self._state))
+        self.setStyleSheet(self._style())
+
+    def _style(self) -> str:
+        base = f"border-top: 2px solid {COLORS['accent']}; padding: 8px;"
+        if self._state == "SWING":
+            return f"color: {COLORS['fg']}; background-color: {COLORS['accent']}; {base}"
+        if self._alarm or self._state in ("ARMED", "ERROR"):
+            color = COLORS["accent"]
+        elif self._state in ("IDLE", "SAVING"):
+            color = COLORS["fg_dim"]
+        else:
+            color = COLORS["fg"]
+        return f"color: {color}; {base}"
 
 
 class MiniBar(QWidget):
-    """微型条形指示（运动能量等）：1px 描边直角，填充用强调色。"""
+    """微型条形指示（运动能量等）：1px 描边直角，填充用强调色，可选阈值刻度竖线。"""
 
-    def __init__(self, maximum: float = 40.0) -> None:
+    def __init__(self, maximum: float = 40.0, threshold: float | None = None) -> None:
         super().__init__()
         self._maximum = maximum
         self._value = 0.0
+        self._threshold = threshold
         self.setMinimumHeight(10)
 
     def set_value(self, value: float) -> None:
         self._value = max(0.0, min(value, self._maximum))
+        self.update()
+
+    def set_threshold(self, value: float | None) -> None:
+        """触发阈值刻度竖线位置（与 set_value 同一量纲）。"""
+        self._threshold = value
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802（Qt 命名）
@@ -97,6 +145,11 @@ class MiniBar(QWidget):
                 1, 1, int((self.width() - 2) * frac), self.height() - 2,
                 QColor(COLORS["accent"]),
             )
+        # 触发阈值刻度：亮白竖线，便于目测"还差多少触发"
+        if self._threshold is not None and self._maximum > 0:
+            x = 1 + int((self.width() - 2) * min(max(self._threshold / self._maximum, 0.0), 1.0))
+            painter.setPen(QPen(QColor(COLORS["fg"]), 1))
+            painter.drawLine(x, 0, x, self.height() - 1)
         painter.end()
 
 

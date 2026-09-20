@@ -1,7 +1,8 @@
 """采集控制器：帧源线程 + 状态机驱动 + Qt 信号桥（PRD F1/F5/F6 的 UI 侧）。
 
 线程模型：
-    _CaptureThread（QThread）：逐帧读帧源 → 状态机 feed_frame → 片段落盘
+    _CaptureThread（QThread）：逐帧读帧源 → 状态机 feed_frame
+    _SaveWorker（QThread）：片段编码落盘队列消费（M1：保存不阻塞抓帧）
     CaptureController（QObject，主线程创建）：信号转发给 UI，手动控制加锁
 状态机 listener 在构造时注册为 Qt 信号发射；跨线程连接自动走队列，
 无头测试同线程调用 feed() 时信号同步直达。
@@ -9,6 +10,7 @@
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from collections import deque
@@ -17,15 +19,68 @@ import numpy as np
 from PySide6.QtCore import QThread, QObject, Signal
 
 from app.capture import ClipWriter, FrameSource, RingBuffer, UvcSource, split_sbs
-from app.detect import CaptureStateMachine, Clip, PresenceDetector, Roi, SwingDetector
+from app.capture.ring_buffer import BufferItem
+from app.detect import CaptureStateMachine, Clip, PresenceDetector, Roi, State, SwingDetector
 from app.envcheck import EnvCheckSettings, check_brightness, check_flicker
 from app.envcheck.models import CheckResult
 from app.session import SessionStore, new_session_id
 from app.ui.settings import AppSettings
-from app.voice import NullVoice, SayVoice, Voice
+from app.voice import NullVoice, SayVoice, Voice, error_prompt
 
 PREVIEW_FPS = 30.0  # 预览降频目标（PRD：120fps 流下预览 30fps 显示）
 _ENV_SAMPLE_STRIDE = 4  # 持续环境监测：每 4 帧采一次亮度样本（120fps → 30 样本/秒）
+
+# 落盘任务 = (片段, 已提取帧序列, 编码帧率, 检测 ROI)
+_SaveJob = tuple[Clip, list[BufferItem], float, "Roi | None"]
+
+
+class _SaveWorker(QThread):
+    """片段落盘 worker：抓帧线程只入队，编码/写盘在此线程串行消费（PRD §5 EncodeWorker）。"""
+
+    saved = Signal(object)   # 登记后的 record dict
+    failed = Signal(str)     # 落盘异常消息
+
+    def __init__(self, store: SessionStore, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._store = store
+        self._queue: queue.Queue[_SaveJob | None] = queue.Queue()
+
+    def enqueue(self, job: _SaveJob) -> None:
+        self._queue.put(job)
+
+    def run(self) -> None:
+        while True:
+            job = self._queue.get()
+            try:
+                if job is None:  # 关停哨兵
+                    return
+                self._process(job)
+            except Exception as e:
+                self.failed.emit(str(e))
+            finally:
+                self._queue.task_done()
+
+    def _process(self, job: _SaveJob) -> None:
+        clip, items, fps, roi = job
+        session_id = new_session_id()
+        out_dir = self._store.sessions_dir / session_id
+        paths = ClipWriter(fps=fps).write_clip(items, out_dir, meta={
+            "source": "ui-capture",
+            "roi": list(roi) if roi else None,
+        })
+        record = self._store.add_clip(
+            session_id=session_id,
+            clip_dir=paths.out_dir,
+            frame_count=paths.frame_count,
+            fps=fps,
+            trigger_idx=clip.trigger_idx - clip.start_idx,  # 段内相对帧号
+        )
+        self.saved.emit(record)
+
+    def shutdown(self, timeout_ms: int = 15000) -> None:
+        """排空队列后退出（哨兵排在既有任务之后，不丢片段）。"""
+        self._queue.put(None)
+        self.wait(timeout_ms)
 
 
 class _CaptureThread(QThread):
@@ -53,8 +108,8 @@ class _CaptureThread(QThread):
                 now = time.monotonic()
                 if now > t0:
                     ctl._measured_fps = n / (now - t0)
-        except Exception as e:  # 相机断开 / 文件损坏 → 状态机 ERROR
-            ctl.error_occurred.emit(str(e))
+        except Exception as e:  # 相机断开 / 文件损坏 → 状态机 ERROR + 分类语音
+            ctl._report_error(str(e))
         finally:
             self._source.close()
             ctl.camera_active.emit(False)
@@ -96,6 +151,13 @@ class CaptureController(QObject):
         self._paused = False
         self._measured_fps = 0.0
         self._last_frame: tuple[np.ndarray, np.ndarray] | None = None
+        # M1 落盘 worker：抓帧线程只入队，编码/写盘串行消费不阻塞采集
+        self._save_worker = _SaveWorker(store, parent=self)
+        self._save_worker.saved.connect(self.clip_saved.emit)
+        self._save_worker.failed.connect(
+            lambda msg: self._report_error(f"片段落盘失败: {msg}")
+        )
+        self._save_worker.start()
         # F11 持续监测：滚动亮度样本（ROI 均值 / 整帧均值），保留约 3 秒窗口
         self._env_roi_means: deque[float] = deque(maxlen=512)
         self._env_frame_means: deque[float] = deque(maxlen=512)
@@ -170,6 +232,15 @@ class CaptureController(QObject):
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
+
+    @property
+    def detector_roi(self) -> Roi | None:
+        """当前生效的检测 ROI（含首帧懒建的默认框），供预览回显。"""
+        return self._detector_roi
+
+    def say(self, text: str, priority: int = 0) -> None:
+        """UI 层直接播报（如 ARMED 超时提醒），走与状态机同一 Voice。"""
+        self._voice.speak(text, priority=priority)
 
     # ---- 帧喂入（抓帧线程与无头测试共用） ----
 
@@ -304,22 +375,31 @@ class CaptureController(QObject):
 
     def close(self) -> None:
         self.stop()
+        self._save_worker.shutdown()
         self._voice.close()
 
-    # ---- 片段落盘（clip_saver，在抓帧线程内同步执行） ----
+    # ---- 异常上报（抓帧线程 / 落盘 worker 共用入口） ----
+
+    def _report_error(self, message: str) -> None:
+        """异常分类：状态机 ERROR（内部按消息分类语音播报）+ 通知 UI。"""
+        with self._lock:
+            sm = self._sm
+        if sm is not None and sm.state is not State.ERROR:
+            sm.error(message)
+        elif sm is None:
+            self._voice.speak(error_prompt(message), priority=2)
+        self.error_occurred.emit(message)
+
+    # ---- 片段落盘（clip_saver，抓帧线程内调用；编码写盘在 worker 线程） ----
 
     def _save_clip(self, clip: Clip) -> None:
-        session_id = new_session_id()
-        out_dir = self.store.sessions_dir / session_id
-        paths = self._writer.write_clip(clip.frames(), out_dir, meta={
-            "source": "ui-capture",
-            "roi": list(self._detector_roi) if self._detector_roi else None,
-        })
-        record = self.store.add_clip(
-            session_id=session_id,
-            clip_dir=paths.out_dir,
-            frame_count=paths.frame_count,
-            fps=self._writer.fps,
-            trigger_idx=clip.trigger_idx,
-        )
-        self.clip_saved.emit(record)
+        """即刻从环形缓冲取出帧引用入队（numpy 数组不拷贝，防缓冲被覆盖）。"""
+        items = clip.frames()
+        self._save_worker.enqueue((clip, items, self._writer.fps, self._detector_roi))
+
+    def flush_saves(self, timeout: float = 10.0) -> bool:
+        """等待落盘队列清空（测试 / 关停前用），返回是否已清空。"""
+        deadline = time.monotonic() + timeout
+        while self._save_worker._queue.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.005)
+        return not self._save_worker._queue.unfinished_tasks

@@ -144,12 +144,15 @@ def test_state_machine_signals_reach_ui(qapp, settings, store):
     # IDLE→READY→ARMED→SWING→SAVING→READY 全链路到达 UI
     assert states[:3] == ["READY", "ARMED", "SWING"]
     assert "SAVING" in states
+    # M1：落盘在 worker 线程异步执行，等待队列清空并处理跨线程信号
+    assert controller.flush_saves()
+    qapp.processEvents()
     # 片段落盘 + 索引登记 → UI 计数更新
     assert store.counts()["total"] == 1
     assert page.m_total.value.text() == "1"
     assert page.m_review.value.text() == "1"
-    # 状态横幅跟随状态机（保存完成后回到 READY）
-    assert page.state_banner.text() == "READY"
+    # 状态横幅跟随状态机且已中文化（保存完成后回 READY→请准备；倒计时中显示大号数字）
+    assert page.state_banner.text() in ("请准备", "1")
     page.shutdown()
 
 

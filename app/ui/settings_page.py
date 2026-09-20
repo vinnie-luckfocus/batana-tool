@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -35,6 +36,12 @@ class SettingsPage(QWidget):
         self.settings = settings
         self._build_ui()
         self._load_values()
+        # M5：选 MJPEG 时弹警告（须在 _load_values 之后连接，避免初始化误触发）
+        self.combo_format.currentTextChanged.connect(self._on_format_changed)
+        # L5：段数/单段大小变更时刷新磁盘占用估算
+        self.spin_env_clips.valueChanged.connect(self._refresh_disk_estimate)
+        self.spin_env_mb.valueChanged.connect(self._refresh_disk_estimate)
+        self._refresh_disk_estimate()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -126,6 +133,10 @@ class SettingsPage(QWidget):
         self.edit_pose_model.setPlaceholderText("留空 = StubPoseEstimator")
         form.addRow(label("POSE 模型文件"), self.edit_pose_model)
 
+        self.edit_core_repo = QLineEdit()
+        self.edit_core_repo.setPlaceholderText("留空 = 自动探测常见位置")
+        form.addRow(label("CORE 仓路径"), self.edit_core_repo)
+
         form.addRow(SectionHeader(">>> 环境检查"))
         self.spin_env_bright_fail = QDoubleSpinBox()
         self.spin_env_bright_fail.setRange(0, 255)
@@ -167,6 +178,11 @@ class SettingsPage(QWidget):
         self.spin_env_mb.setDecimals(0)
         self.spin_env_mb.setSuffix(" MB")
         form.addRow(label("单段估算大小"), self.spin_env_mb)
+        # L5 磁盘占用静态估算（计划段数 × 单段大小）
+        self.label_disk_est = QLabel("")
+        self.label_disk_est.setObjectName("dim")
+        self.label_disk_est.setFont(mono_font(10, letter_spacing=1.5))
+        form.addRow(label("预计磁盘占用"), self.label_disk_est)
 
         root.addWidget(block_widget(form_host), stretch=1)
 
@@ -213,6 +229,23 @@ class SettingsPage(QWidget):
         self.spin_env_level_fail.setValue(s.env_level_fail_deg)
         self.spin_env_clips.setValue(s.env_planned_clips)
         self.spin_env_mb.setValue(s.env_est_mb_per_clip)
+        self.edit_core_repo.setText(s.core_repo_path)
+
+    def _on_format_changed(self, text: str) -> None:
+        """M5 防呆：MJPEG 有损压缩仅供冒烟，正式素材应选无压缩。"""
+        if text == "mjpeg":
+            QMessageBox.warning(
+                self, "像素格式警告",
+                "MJPEG 为有损压缩，仅供冒烟测试；\n正式素材请使用无压缩格式（auto / mono8 / yuy2）。",
+            )
+
+    def _refresh_disk_estimate(self) -> None:
+        """L5：磁盘占用静态估算 = 计划段数 × 单段估算大小。"""
+        total_mb = self.spin_env_clips.value() * self.spin_env_mb.value()
+        if total_mb >= 1024:
+            self.label_disk_est.setText(f"{total_mb / 1024:.1f} GB")
+        else:
+            self.label_disk_est.setText(f"{total_mb:.0f} MB")
 
     def _browse_root(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择存储根目录", self.edit_root.text())
@@ -236,6 +269,7 @@ class SettingsPage(QWidget):
         s.voice_rate = int(self.spin_rate.value())
         s.storage_root = self.edit_root.text().strip() or s.storage_root
         s.pose_model_path = self.edit_pose_model.text().strip()
+        s.core_repo_path = self.edit_core_repo.text().strip()
         s.env_brightness_fail = float(self.spin_env_bright_fail.value())
         s.env_brightness_warn = float(self.spin_env_bright_warn.value())
         s.env_flicker_warn_pct = float(self.spin_env_flicker_warn.value())

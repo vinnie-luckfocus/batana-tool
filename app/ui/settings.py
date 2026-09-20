@@ -45,6 +45,8 @@ class AppSettings:
     storage_root: str = DEFAULT_STORAGE_ROOT
     # F7 骨架（MediaPipe 模型文件路径；空 = 未配置，用 Stub）
     pose_model_path: str = ""
+    # F10 导出校验：batana-core 仓路径（空 = 自动探测常见位置）
+    core_repo_path: str = ""
     # F11 环境检查（阈值默认值见 app/envcheck/defaults.py，设置页可调）
     env_brightness_fail: float = 60.0
     env_brightness_warn: float = 90.0

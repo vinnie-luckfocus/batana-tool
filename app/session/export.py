@@ -28,6 +28,23 @@ _ISO_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 # batana-core 仓默认路径（存在时可调用其全量校验器）
 DEFAULT_CORE_REPO = Path("/Users/vinniechow/Projects/private/batana-core")
 
+# 未配置时的常见探测位置
+_CORE_REPO_CANDIDATES = [
+    DEFAULT_CORE_REPO,
+    Path.home() / "Projects/private/batana-core",
+    Path.home() / "Projects/batana-core",
+]
+
+
+def resolve_core_repo(configured: str = "") -> Path | None:
+    """解析 batana-core 仓路径：settings 配置优先，否则探测常见位置；不可用返回 None。"""
+    candidates = [Path(configured)] if configured else []
+    candidates += _CORE_REPO_CANDIDATES
+    for c in candidates:
+        if core_validator_available(c):
+            return c
+    return None
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")

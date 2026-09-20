@@ -11,7 +11,24 @@ PROMPT_SWING = "请挥棒"
 PROMPT_SWING_DONE = "挥棒完成"
 PROMPT_LEFT = "人员离开，已暂停采集"
 PROMPT_ERROR = "出现异常，请检查设备"
+PROMPT_ERROR_CAMERA = "相机断开，请检查设备连接"
+PROMPT_ERROR_STORAGE = "存储失败，请检查磁盘空间"
+PROMPT_NO_SWING = "未检测到挥棒，请用力挥棒或使用手动开始"
 PROMPT_DISCARDED = "已丢弃，请重新挥棒"
+
+# 异常文案分类关键词（消息小写后匹配；存储优先于相机）
+_STORAGE_KEYWORDS = ("存储", "落盘", "写入", "磁盘", "空间", "disk", "write", "storage")
+_CAMERA_KEYWORDS = ("相机", "camera", "uvc", "设备", "打开", "断开", "读帧")
+
+
+def error_prompt(message: str) -> str:
+    """按异常消息分类语音提示：相机断开 / 存储失败 / 通用异常。"""
+    msg = message.lower()
+    if any(k in msg for k in _STORAGE_KEYWORDS):
+        return PROMPT_ERROR_STORAGE
+    if any(k in msg for k in _CAMERA_KEYWORDS):
+        return PROMPT_ERROR_CAMERA
+    return PROMPT_ERROR
 
 
 def prompt_saved(seq: int) -> str:

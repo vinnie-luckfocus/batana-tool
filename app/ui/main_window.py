@@ -93,6 +93,11 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.settings_page)
         root.addWidget(self.stack, stretch=1)
 
+        # H5：启动时静默重建索引，补登到素材时状态栏提示
+        recovered = self.store.rebuild()
+        if recovered > 0:
+            self.capture_page.status_line.setText(f">>> 已恢复 {recovered} 段素材（索引重建）")
+
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         # 切到审核页时刷新列表（采集页保存的段即时可见）
