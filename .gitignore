@@ -5,3 +5,4 @@ __pycache__/
 sessions/
 samples/output/
 .DS_Store
+samples/models/

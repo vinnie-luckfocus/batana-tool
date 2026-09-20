@@ -65,7 +65,7 @@ class MediaPipePoseEstimator:
             return False
         return True
 
-    def __init__(self, model_path: str | Path) -> None:
+    def __init__(self, model_path: str | Path, delegate: str = "cpu") -> None:
         model_path = Path(model_path)
         if not model_path.is_file():
             raise FileNotFoundError(
@@ -73,8 +73,14 @@ class MediaPipePoseEstimator:
             )
         from mediapipe.tasks.python import BaseOptions, vision
 
+        # 默认 CPU delegate：macOS 上默认 GPU(Metal) 在无显示/受限环境会
+        # 直接 Abort（DrishtiMetalHelper Service unavailable），CPU 全环境稳定；
+        # GPU 加速待真机验证后再开放（delegate="gpu"）。
+        delegate_enum = (
+            BaseOptions.Delegate.GPU if delegate.lower() == "gpu" else BaseOptions.Delegate.CPU
+        )
         options = vision.PoseLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=str(model_path)),
+            base_options=BaseOptions(model_asset_path=str(model_path), delegate=delegate_enum),
             running_mode=vision.RunningMode.VIDEO,
             num_poses=1,
         )

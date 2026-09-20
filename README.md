@@ -66,6 +66,7 @@ python3.12 -m venv .venv
 
 - **FFV1/MKV 可用**：写 30 帧随机噪声读回逐位一致（无损）；mp4v 回退路径有测试覆盖
 - **mediapipe 1.0.1 可用**（Python 3.12）：Tasks `PoseLandmarker` 导入正常；旧 `mp.solutions` API 已移除，实现走 Tasks VIDEO 模式；模型文件需另行下载（`pose_landmarker_lite.task`，见 `app/pose/estimator.py`  docstring 内地址），缺失时构造抛 `FileNotFoundError` 优雅降级
+- **已知问题（2026-09-20 实测）**：mediapipe 1.0.1 的 PoseLandmarker 在 **headless shell 环境（无 WindowServer 连接）**下创建即 Abort（`DrishtiMetalHelper: Service is unavailable`，CPU delegate 与 `MEDIAPIPE_DISABLE_GPU=1` 均无效，QApplication offscreen 亦无效）——macOS 构建的检测计算器无条件初始化 Metal 上下文所致。构造器已加 `delegate="cpu"` 默认参数（规避 GPU 路径的其他不确定性）。**待验证**：打包为 .app bundle（有 Info.plist/GUI 会话）后重试；备选降级路径为 mediapipe 0.10.x `mp.solutions.pose`。当前骨架链路以 Stub 估计器验证，真实推理 smoke 待上述任一环境通过
 - 依赖注意：`pip install mediapipe` 会把 `opencv-python` 换装为 `opencv-contrib-python`（功能超集，FFV1 不受影响）
 
 ### 目录结构
