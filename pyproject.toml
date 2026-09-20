@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batana-tool"
-version = "0.1.0"
+version = "0.2.0"
 description = "batana-core 素材采集与标注工具（macOS 桌面端，双目挥棒素材生产）"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 # 骨架标注：mediapipe 会把 opencv-python 换装为 opencv-contrib-python（功能超集，FFV1 仍可用）
 pose = ["mediapipe>=0.10"]
-# 桌面 UI（下一里程碑）；核心层与测试不依赖 Qt
+# 桌面 UI（采集/审核/设置三页）；核心层与测试不依赖 Qt
 ui = ["PySide6>=6.6"]
 dev = ["pytest>=7.4"]
 
@@ -32,3 +32,5 @@ include = ["app*", "samples*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# 使 tests 可作为命名空间包导入（tests.conftest），两种 pytest 调用方式均可用
+pythonpath = ["."]

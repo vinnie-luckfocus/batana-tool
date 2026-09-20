@@ -38,10 +38,21 @@ python3.12 -m venv .venv
 ```
 
 ```bash
-.venv/bin/pytest                                      # 全部无头测试（59 项，含合成视频端到端）
+.venv/bin/pytest                                      # 全部无头测试（66 项，含合成视频端到端与 UI 离屏冒烟）
 .venv/bin/python -m app.main --gen-synth out.mkv      # 生成合成双目测试视频（2560x800 SBS，8px 视差）
 .venv/bin/python -m samples.gen_synth out.mkv --fps 120 --cycles 3
 ```
+
+### GUI 使用
+
+```bash
+.venv/bin/python -m app.main                                   # 启动桌面 GUI（默认采集页，UVC 相机源）
+.venv/bin/python -m app.main --source samples/output/synth_swing.mkv   # 视频文件回放演示（无相机）
+```
+
+三页结构（顶部页签切换）：**采集页**（实时预览 ~30fps 降频、左/右/双目并排切换、ROI 拖拽框选持久化到 settings.json、状态机大字横幅与遥测、开始/暂停/手动挥棒/丢弃重拍/静音/相机源选择）、**审核页**（素材列表筛选、逐帧回放、骨架叠加与拖动修正/撤销/重跑单帧、修剪、三段式标记、合格素材批量导出+校验报告）、**设置页**（采集模式/检测阈值/pre-post-roll/语音/存储根目录）。
+
+界面为「战术遥测 / CRT 终端」设计系统（`app/ui/theme.py`）：#0A0A0A/#121212 直角块 + 1px 网格缝、唯一强调色 #E61919、终端绿 #4AF626 仅用于相机连接指示、等宽遥测字体（JetBrains Mono → Menlo 回退）、ASCII 区段头与十字准线装饰。
 
 ### 核心层 API（供 UI 层集成，全部可无头运行）
 
@@ -57,17 +68,18 @@ python3.12 -m venv .venv
 - **mediapipe 1.0.1 可用**（Python 3.12）：Tasks `PoseLandmarker` 导入正常；旧 `mp.solutions` API 已移除，实现走 Tasks VIDEO 模式；模型文件需另行下载（`pose_landmarker_lite.task`，见 `app/pose/estimator.py`  docstring 内地址），缺失时构造抛 `FileNotFoundError` 优雅降级
 - 依赖注意：`pip install mediapipe` 会把 `opencv-python` 换装为 `opencv-contrib-python`（功能超集，FFV1 不受影响）
 
-### 目录结构（核心层已实现，UI 页面待下一里程碑）
+### 目录结构
 
 ```
 app/
-├── main.py            # 入口（当前提供合成视频生成命令；GUI 待实现）
+├── main.py            # 入口：QApplication + 三页主窗口；--source 文件回放演示；--gen-synth 合成视频
 ├── capture/           # 帧源抽象/UVC/FileSource、SBS 切分、RingBuffer、ClipWriter
 ├── detect/            # PresenceDetector、SwingDetector、CaptureStateMachine
 ├── pose/              # PoseFrame 数据模型、pose2d 读写、Stub/MediaPipe 估计器
 ├── voice/             # Voice 抽象、SayVoice、NullVoice、中文文案
-└── session/           # SessionStore 素材索引、export_session 契约导出与校验
-tests/                 # 59 项无头测试：状态机/检测/环缓冲/落盘/导出/pose + 端到端
+├── session/           # SessionStore 素材索引、export_session 契约导出与校验
+└── ui/                # 采集页/审核页/设置页 + 设计系统（theme）+ 采集控制器（线程/信号桥）
+tests/                 # 66 项无头测试：核心层 59 项 + UI 离屏冒烟 7 项
 samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→挥棒→静止，循环）
 ```
 
@@ -82,6 +94,7 @@ samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→�
 | --- | --- | --- | --- |
 | 0.1-draft | 2026-09-20 | 仓库创建，PRD v1.0 定稿（docs/prd.md） | 待同步司令塔 repos.yaml |
 | 0.1 | 2026-09-20 | 核心层实现：采集/检测/语音/姿态/会话导出 + 59 项无头测试 + 合成素材生成器（UI 页面待下一里程碑） | 待同步司令塔 repos.yaml |
+| 0.2 | 2026-09-20 | 桌面 UI：采集/审核/设置三页（战术遥测设计系统）、采集控制器线程信号桥、骨架叠加修正/修剪/标记/批量导出、UI 离屏冒烟 7 项（合计 66 项全绿） | 待同步司令塔 repos.yaml |
 
 ## 许可证
 
