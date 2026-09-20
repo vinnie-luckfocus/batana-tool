@@ -158,7 +158,7 @@ class CapturePage(QWidget):
         col2.addWidget(self.m_energy)
         self.energy_bar = MiniBar(maximum=40.0)
         col2.addWidget(self.energy_bar)
-        side.addWidget(card_widget(metrics))
+        side.addWidget(card_widget(metrics, shadow=True))
 
         # 控制区
         controls = QWidget()
@@ -224,7 +224,7 @@ class CapturePage(QWidget):
         view_row.addWidget(self.combo_view, stretch=1)
         ctl.addLayout(view_row)
         ctl.addStretch(1)
-        side.addWidget(card_widget(controls), stretch=1)
+        side.addWidget(card_widget(controls, shadow=True), stretch=1)
 
         # 状态栏消息
         self.status_line = QLabel("待命")

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -35,7 +36,7 @@ from app.session.export import resolve_core_repo, validate_with_core
 from app.ui.player import ClipPlayer, PlayerWidget
 from app.ui.settings import AppSettings
 from app.ui.theme import mono_font, ui_font
-from app.ui.widgets import SectionHeader, TelemetryValue, card_widget
+from app.ui.widgets import EmptyStateView, SectionHeader, TelemetryValue, card_widget
 
 _FILTER_ALL = "全部"
 _FILTERS = [_FILTER_ALL, STATUS_PASS, STATUS_FAIL, STATUS_REVIEW]
@@ -171,7 +172,7 @@ class ReviewPage(QWidget):
         body.setSpacing(12)
         root.addLayout(body, stretch=1)
 
-        # 左：筛选 + 素材列表 + 批量导出
+        # 左：筛选 + 素材列表 + 批量导出（访达侧栏观感：sidebar 材质毛玻璃面板）
         left = QWidget()
         left.setMinimumWidth(320)
         left_layout = QVBoxLayout(left)
@@ -185,15 +186,15 @@ class ReviewPage(QWidget):
         self.list_clips = QListWidget()
         self.list_clips.currentItemChanged.connect(self._on_item_selected)
         left_layout.addWidget(self.list_clips, stretch=1)
-        # 空状态引导视图：无素材时覆盖在列表上（不遮挡空表的系统渲染，仅提示下一步）
-        self.list_empty_hint = QLabel(
-            "暂无素材\n\n先到「采集」页录制挥棒片段，\n保存后会出现在这里。",
-            self.list_clips.viewport(),
+        # 空状态引导视图：无素材时覆盖在列表上（图标位 + 标题 + 说明 + 行动按钮）
+        self.list_empty = EmptyStateView(
+            "暂无素材",
+            "先到「采集」页录制挥棒片段，\n保存后会出现在这里。",
+            icon=self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
+            action_text="前往采集页",
+            on_action=self._goto_capture,
+            parent=self.list_clips.viewport(),
         )
-        self.list_empty_hint.setObjectName("dim")
-        self.list_empty_hint.setFont(ui_font(13))
-        self.list_empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.list_empty_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.btn_export = QPushButton("批量导出（合格素材）")
         self.btn_export.setObjectName("primary")
         self.btn_export.clicked.connect(self.export_passed)
@@ -201,7 +202,15 @@ class ReviewPage(QWidget):
         self.btn_delete = QPushButton("删除选中素材")
         self.btn_delete.clicked.connect(self.delete_current)
         left_layout.addWidget(self.btn_delete)
-        body.addWidget(card_widget(left), stretch=1)
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebarPanel")
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(12, 12, 12, 12)
+        sidebar_layout.addWidget(left)
+        # 侧栏透明：透出主窗口 underWindowBackground 毛玻璃（访达侧栏观感）。
+        # 不给子面板单独挂 NSVisualEffectView——子部件 winId() 强制 native 后
+        # Qt 不再绘制其子树（列表/按钮会整体消失），vibrancy 只挂顶层窗口。
+        body.addWidget(sidebar, stretch=1)
 
         # 右：回放 + 操作
         right = QVBoxLayout()
@@ -245,7 +254,7 @@ class ReviewPage(QWidget):
         tp.addWidget(self.btn_trigger)
         tp.addWidget(self.combo_speed)
         tp.addWidget(self.combo_eye)
-        right.addWidget(card_widget(transport))
+        right.addWidget(card_widget(transport, shadow=True))
 
         # 操作区：修剪 / 骨架 / 标记
         ops = QWidget()
@@ -286,6 +295,7 @@ class ReviewPage(QWidget):
         pose_eye_row.addWidget(self.combo_pose_eye, stretch=1)
         pose_box.addLayout(pose_eye_row)
         self.btn_run_pose = QPushButton("跑骨架（整段）")
+        self.btn_run_pose.setObjectName("primary")
         self.btn_run_pose.clicked.connect(self.run_pose)
         pose_box.addWidget(self.btn_run_pose)
         pose_row = QHBoxLayout()
@@ -324,7 +334,7 @@ class ReviewPage(QWidget):
         mark_box.addStretch(1)
         ops_layout.addLayout(mark_box)
         ops_layout.addStretch(1)
-        right.addWidget(card_widget(ops))
+        right.addWidget(card_widget(ops, shadow=True))
 
         self.status_line = QLabel("选择左侧素材开始审核")
         self.status_line.setObjectName("dim")
@@ -365,15 +375,21 @@ class ReviewPage(QWidget):
         self._update_empty_hint()
 
     def _update_empty_hint(self) -> None:
-        """空状态引导：列表为空时显示说明，否则隐藏。"""
-        self.list_empty_hint.setVisible(self.list_clips.count() == 0)
-        hint = self.list_empty_hint
-        hint.setGeometry(self.list_clips.viewport().rect())
-        hint.raise_()
+        """空状态引导：列表为空时显示引导视图，否则隐藏。"""
+        self.list_empty.setVisible(self.list_clips.count() == 0)
+        self.list_empty.setGeometry(self.list_clips.viewport().rect())
+        self.list_empty.raise_()
+
+    def _goto_capture(self) -> None:
+        """空态行动按钮：切回采集页。"""
+        window = self.window()
+        if hasattr(window, "stack"):
+            window.stack.setCurrentIndex(0)
+            window._tabs[0].setChecked(True)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        if hasattr(self, "list_empty_hint"):
+        if hasattr(self, "list_empty"):
             self._update_empty_hint()
 
     def _on_item_selected(self, item: QListWidgetItem | None, _prev=None) -> None:

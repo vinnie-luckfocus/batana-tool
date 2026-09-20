@@ -185,7 +185,7 @@ class SettingsPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(card_widget(form_host))
+        scroll.setWidget(card_widget(form_host))  # 滚动区内不挂阴影（会被视口裁剪）
         root.addWidget(scroll, stretch=1)
 
         bottom = QWidget()

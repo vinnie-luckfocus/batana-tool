@@ -24,6 +24,7 @@ from app.ui.review_page import ReviewPage
 from app.ui.settings import AppSettings
 from app.ui.settings_page import SettingsPage
 from app.ui.theme import ui_font
+from app.ui.vibrancy import apply_vibrancy
 
 _PAGES = [("采集",), ("审核",), ("设置",)]
 
@@ -101,6 +102,10 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.review_page)
         self.stack.addWidget(self.settings_page)
         root.addWidget(self.stack, stretch=1)
+
+        # 真毛玻璃：主窗口背景用 underWindowBackground 材质（NSVisualEffectView），
+        # 页面留白处透出模糊桌面；失败时（offscreen/无 PyObjC）回退默认窗口底色
+        apply_vibrancy(self, material="underWindowBackground")
 
         # H5：启动时静默重建索引，补登到素材时状态栏提示
         recovered = self.store.rebuild()

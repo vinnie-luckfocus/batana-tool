@@ -33,6 +33,7 @@ from app.envcheck.models import (
     STATUS_WARN,
 )
 from app.ui.theme import COLORS, semantic_hex, title_font, ui_font
+from app.ui.vibrancy import apply_vibrancy
 
 # 状态列底色（系统语义色；显式底色在浅/深外观下均可读）
 _STATUS_COLORS = {
@@ -89,6 +90,8 @@ class EnvCheckDialog(QDialog):
         self.setWindowTitle("环境体检")
         self.resize(760, 520)
         self._build_ui()
+        # 弹窗用 popover 材质毛玻璃（失败时回退系统对话框底色）
+        apply_vibrancy(self, material="popover")
 
     # ---- UI 组装 ----
 
@@ -101,11 +104,11 @@ class EnvCheckDialog(QDialog):
         top_layout = QHBoxLayout(top)
         top_layout.setContentsMargins(0, 0, 0, 0)
         title = QLabel("环境体检")
-        title.setFont(title_font(17))
+        title.setFont(title_font(22))
         top_layout.addWidget(title)
         self.label_hint = QLabel(f"采样 {self.duration_s:.0f} 秒，请保持采集位实景")
         self.label_hint.setObjectName("dim")
-        self.label_hint.setFont(ui_font(12))
+        self.label_hint.setFont(ui_font(13))
         top_layout.addSpacing(10)
         top_layout.addWidget(self.label_hint)
         top_layout.addStretch(1)
@@ -136,6 +139,7 @@ class EnvCheckDialog(QDialog):
         self.label_overall.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bt.addWidget(self.label_overall, stretch=1)
         self.btn_start = QPushButton("开始检查")
+        self.btn_start.setObjectName("primary")
         self.btn_start.setDefault(True)
         self.btn_start.clicked.connect(self.start_check)
         self.btn_close = QPushButton("关闭")

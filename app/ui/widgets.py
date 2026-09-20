@@ -1,26 +1,58 @@
-"""设计系统通用控件：卡片容器、区段标题、遥测数值、状态 pill、迷你进度条、相机指示。
+"""设计系统通用控件：半透明卡片、区段标题、遥测数值、状态 pill、迷你进度条、
+相机指示、通知横幅、空状态引导视图、着色软阴影。
 
-macOS 原生风格：圆角卡片面、次级灰标签、数值用等宽数字字体；
-StateBanner 为圆角状态 pill（语义色：绿=就绪、蓝=进行中、红=异常/挥棒提示）。
+macOS 26 Liquid Glass 观感：连续圆角 10–14px、半透明表面透出背后模糊、
+0.5px 发丝描边、同一方向（正下方微偏移）统一模糊半径的软阴影。
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QGraphicsDropShadowEffect,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+)
 
-from app.ui.theme import mono_font, semantic_hex, tint, ui_font
+from app.ui.theme import (
+    SHADOW_BLUR,
+    SHADOW_DY,
+    is_dark_mode,
+    mono_font,
+    semantic_color,
+    semantic_hex,
+    tint,
+    ui_font,
+)
 
 
-def card_widget(inner: QWidget | None = None) -> QWidget:
-    """圆角卡片容器（比窗口浅一级的面，替代旧 1px 网格缝子块）。"""
+def soft_shadow(widget: QWidget) -> None:
+    """着色软阴影：正下方微偏移、统一模糊半径、带环境色偏色（非黑灰死阴影）。"""
+    effect = QGraphicsDropShadowEffect(widget)
+    effect.setBlurRadius(SHADOW_BLUR)
+    effect.setOffset(0, SHADOW_DY)
+    if is_dark_mode():
+        effect.setColor(QColor(0, 0, 0, 120))
+    else:
+        effect.setColor(QColor(30, 45, 70, 36))  # 偏冷环境色
+    widget.setGraphicsEffect(effect)
+
+
+def card_widget(inner: QWidget | None = None, shadow: bool = False) -> QWidget:
+    """圆角半透明卡片容器（0.5px 发丝描边由 QSS 提供；可选软阴影）。
+
+    频繁重绘的内容（如视频预览）不要开阴影，避免每次重绘走 effect 光栅化。
+    """
     w = QWidget()
     w.setObjectName("card")
     if inner is not None:
         layout = QVBoxLayout(w)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.addWidget(inner)
+    if shadow:
+        soft_shadow(w)
     return w
 
 
@@ -49,6 +81,7 @@ class TelemetryValue(QWidget):
         self.label.setFont(ui_font(11))
         self.value = QLabel(value)
         self.value.setFont(mono_font(15))
+        self.value.setMinimumWidth(96)  # 避免窄栏换行错位
         if accent:
             self.value.setObjectName("accent")
         layout.addWidget(self.label)
@@ -80,7 +113,10 @@ _STATE_COLORS = {
 
 
 class StateBanner(QLabel):
-    """状态机当前状态 pill：圆角胶囊，语义色半透明底 + 同色文字，READY 倒计时大号数字。"""
+    """状态机当前状态 pill：圆角胶囊，语义色半透明底 + 同色文字 + 内描边高光。
+
+    READY 倒计时显示大号数字。
+    """
 
     def __init__(self, text: str = "IDLE") -> None:
         super().__init__("")
@@ -114,10 +150,12 @@ class StateBanner(QLabel):
 
     def _style(self) -> str:
         name = "red" if self._alarm else _STATE_COLORS.get(self._state, "fg_dim")
+        edge = tint(name, 120)  # 内描边高光：同色更亮一档，模拟玻璃边缘折射
         return (
             f"color: {semantic_hex(name)};"
             f"background-color: {tint(name)};"
-            "border-radius: 12px; padding: 10px 18px;"
+            f"border: 1px solid {edge};"
+            "border-radius: 14px; padding: 12px 20px;"
         )
 
 
@@ -155,7 +193,7 @@ class MiniBar(QWidget):
         # 填充：系统强调色
         frac = self._value / self._maximum if self._maximum > 0 else 0.0
         if frac > 0:
-            painter.setBrush(QColor(semantic_hex("accent")))
+            painter.setBrush(semantic_color("accent"))
             painter.drawRoundedRect(0, int(y), max(h, int(w * frac)), h, h / 2, h / 2)
         # 触发阈值刻度：便于目测"还差多少触发"
         if self._threshold is not None and self._maximum > 0:
@@ -194,5 +232,56 @@ class NotificationBanner(QLabel):
         self.setFont(ui_font(12))
         self.setStyleSheet(
             f"color: {semantic_hex('orange')}; background-color: {tint('orange', 36)};"
+            f"border: 1px solid {tint('orange', 110)};"
         )
         self.hide()
+
+
+class EmptyStateView(QWidget):
+    """空状态引导视图（仿系统设置空态）：图标位 + 标题 + 说明 + 可选行动按钮。
+
+    图标位用系统样式标准图标（QStyle standardIcon），不引入外部素材。
+    """
+
+    def __init__(
+        self,
+        title: str,
+        description: str,
+        icon=None,
+        action_text: str | None = None,
+        on_action=None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(8)
+        layout.addStretch(1)
+        if icon is not None:
+            icon_label = QLabel()
+            icon_label.setPixmap(icon.pixmap(48, 48))
+            icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icon_label.setEnabled(False)  # 系统灰禁用态，弱化存在感
+            layout.addWidget(icon_label)
+            layout.addSpacing(4)
+        title_label = QLabel(title)
+        title_label.setFont(ui_font(15, bold=True))
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        desc_label = QLabel(description)
+        desc_label.setObjectName("dim")
+        desc_label.setFont(ui_font(13))
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+        if action_text and on_action is not None:
+            from PySide6.QtWidgets import QPushButton
+
+            layout.addSpacing(8)
+            btn = QPushButton(action_text)
+            btn.setObjectName("primary")
+            btn.clicked.connect(on_action)
+            row = QVBoxLayout()
+            row.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+            layout.addLayout(row)
+        layout.addStretch(1)

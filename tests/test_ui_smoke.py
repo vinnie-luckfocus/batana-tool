@@ -92,6 +92,18 @@ def test_pages_instantiate_standalone(qapp, settings, store):
     review.shutdown()
 
 
+def test_vibrancy_graceful_fallback(qapp):
+    """毛玻璃模块：offscreen（无窗口服务器）下优雅回退，不崩、返回 False。"""
+    from PySide6.QtWidgets import QWidget
+
+    from app.ui.vibrancy import apply_vibrancy, vibrancy_available
+
+    w = QWidget()
+    assert vibrancy_available() is False  # offscreen 平台不可用
+    assert apply_vibrancy(w, material="sidebar") is False
+    assert apply_vibrancy(w, material="不存在材质") is False
+
+
 # ---- ROI 框选 → settings.json ----
 
 
