@@ -45,6 +45,16 @@ class AppSettings:
     storage_root: str = DEFAULT_STORAGE_ROOT
     # F7 骨架（MediaPipe 模型文件路径；空 = 未配置，用 Stub）
     pose_model_path: str = ""
+    # F11 环境检查（阈值默认值见 app/envcheck/defaults.py，设置页可调）
+    env_brightness_fail: float = 60.0
+    env_brightness_warn: float = 90.0
+    env_flicker_warn_pct: float = 2.0
+    env_flicker_fail_pct: float = 5.0
+    env_sharpness_warn: float = 30.0
+    env_level_warn_deg: float = 2.0
+    env_level_fail_deg: float = 5.0
+    env_planned_clips: int = 200
+    env_est_mb_per_clip: float = 500.0
 
     _path: Path = field(default=DEFAULT_SETTINGS_PATH, repr=False, compare=False)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,12 +16,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.capture import FileSource, UvcSource
 from app.detect import State
+from app.envcheck import EnvCheckSettings, EnvironmentChecker
 from app.session import SessionStore
 from app.ui.controller import CaptureController
+from app.ui.envcheck_dialog import EnvCheckDialog
 from app.ui.preview import VIEW_LEFT, VIEW_RIGHT, VIEW_SBS, PreviewWidget
 from app.ui.settings import AppSettings
-from app.ui.theme import mono_font
+from app.ui.theme import COLORS, mono_font
 from app.ui.widgets import (
     CameraIndicator,
     MiniBar,
@@ -49,10 +53,16 @@ class CapturePage(QWidget):
         super().__init__(parent)
         self.settings = settings
         self.store = store
+        self._file_path: str | None = None  # 文件回放模式下的源路径（环境检查复用）
         self._build_ui()
         self.attach_controller(controller or CaptureController(settings, store))
         self.preview.set_roi(settings.roi_tuple())
         self._refresh_counts()
+        # F11 持续监测：采集中每 5s 用最近 ~1s 帧评估亮度/频闪（纯视觉提示，不打扰语音）
+        self._env_timer = QTimer(self)
+        self._env_timer.setInterval(5000)
+        self._env_timer.timeout.connect(self._monitor_env)
+        self._env_timer.start()
 
     # ---- UI 组装 ----
 
@@ -88,6 +98,14 @@ class CapturePage(QWidget):
 
         self.state_banner = StateBanner("IDLE")
         side.addWidget(block_widget(self.state_banner))
+
+        # F11 环境异常横幅（持续监测结果；无异常时隐藏）
+        self.env_banner = QLabel("")
+        self.env_banner.setFont(mono_font(10, bold=True, letter_spacing=1.5))
+        self.env_banner.setWordWrap(True)
+        self.env_banner.setStyleSheet(f"color: {COLORS['accent']};")
+        self.env_banner.hide()
+        side.addWidget(block_widget(self.env_banner))
 
         # 遥测计数区（高密度两列）
         metrics = QWidget()
@@ -139,6 +157,11 @@ class CapturePage(QWidget):
         self.btn_discard = QPushButton("丢弃重拍")
         self.btn_discard.clicked.connect(lambda: self.controller.discard())
         ctl.addWidget(self.btn_discard)
+
+        self.btn_envcheck = QPushButton("[ ENV CHECK ] 环境体检")
+        self.btn_envcheck.setFont(mono_font(10, bold=True))
+        self.btn_envcheck.clicked.connect(self._on_envcheck_clicked)
+        ctl.addWidget(self.btn_envcheck)
 
         self.chk_mute = QCheckBox("静音")
         self.chk_mute.setFont(mono_font(10))
@@ -220,6 +243,65 @@ class CapturePage(QWidget):
         self.controller.update_roi((x, y, w, h))
         self.status_line.setText(f">>> ROI 已保存 ({x},{y} {w}x{h})")
 
+    # ---- F11 环境体检 ----
+
+    def _on_envcheck_clicked(self) -> None:
+        """打开环境体检对话框：采集中则先暂停，结束后恢复原采集。"""
+        was_running = self.controller.running
+        if was_running:
+            self.controller.stop()
+            self.btn_start.setText("开始采集")
+            self.status_line.setText(">>> 环境检查中，采集已暂停")
+        try:
+            if self._file_path:
+                source = FileSource(self._file_path)
+            else:
+                s = self.settings
+                source = UvcSource(
+                    device_index=s.camera_index,
+                    width=s.capture_width, height=s.capture_height,
+                    fps=s.capture_fps, pixel_format=s.pixel_format,
+                )
+        except Exception as e:
+            self.status_line.setText(f">>> ERROR: {e}")
+            if was_running:
+                self._resume_capture()
+            return
+        checker = EnvironmentChecker(
+            source,
+            roi=self.settings.roi_tuple(),
+            settings=EnvCheckSettings.from_app_settings(self.settings),
+            report_root=self.settings.storage_root,
+        )
+        dialog = EnvCheckDialog(checker, duration_s=10.0, parent=self)
+        dialog.exec()
+        source.close()
+        if was_running:
+            self._resume_capture()
+
+    def _resume_capture(self) -> None:
+        """体检结束后恢复原采集（文件回放模式重建帧源，避免复用已关闭的 cap）。"""
+        if self._file_path:
+            self.set_file_source(self._file_path)
+        if self.controller.start():
+            self.btn_start.setText("暂停")
+            self.status_line.setText(">>> 采集运行中")
+
+    def _monitor_env(self) -> None:
+        """持续监测（5s 定时）：采集中评估最近 ~1s 亮度/频闪，异常时横幅提示。"""
+        if not self.controller.running or self.controller.paused:
+            return
+        problems = self.controller.evaluate_environment()
+        if problems:
+            text = ">>> ENV " + " ｜ ".join(
+                f"{r.name}: {r.measured}（{r.suggestion}）" if r.suggestion else f"{r.name}: {r.measured}"
+                for r in problems
+            )
+            self.env_banner.setText(text)
+            self.env_banner.show()
+        else:
+            self.env_banner.hide()
+
     # ---- 控制 ----
 
     def _on_start_clicked(self) -> None:
@@ -246,13 +328,13 @@ class CapturePage(QWidget):
             if path:
                 self.set_file_source(path)
         else:
+            self._file_path = None
             self.settings.camera_index = int(text.removeprefix(_SOURCE_UVC_PREFIX))
             self.settings.save()
 
     def set_file_source(self, path: str) -> None:
         """切到视频文件回放源（无相机演示模式）。"""
-        from app.capture import FileSource
-
+        self._file_path = path
         was_running = self.controller.running
         self.controller.stop()
         self.controller = CaptureController(
@@ -275,4 +357,5 @@ class CapturePage(QWidget):
         self.m_review.set_value(str(counts["待复核"]))
 
     def shutdown(self) -> None:
+        self._env_timer.stop()
         self.controller.close()

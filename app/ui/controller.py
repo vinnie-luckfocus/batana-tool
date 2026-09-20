@@ -11,17 +11,21 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 
 import numpy as np
 from PySide6.QtCore import QThread, QObject, Signal
 
 from app.capture import ClipWriter, FrameSource, RingBuffer, UvcSource, split_sbs
 from app.detect import CaptureStateMachine, Clip, PresenceDetector, Roi, SwingDetector
+from app.envcheck import EnvCheckSettings, check_brightness, check_flicker
+from app.envcheck.models import CheckResult
 from app.session import SessionStore, new_session_id
 from app.ui.settings import AppSettings
 from app.voice import NullVoice, SayVoice, Voice
 
 PREVIEW_FPS = 30.0  # 预览降频目标（PRD：120fps 流下预览 30fps 显示）
+_ENV_SAMPLE_STRIDE = 4  # 持续环境监测：每 4 帧采一次亮度样本（120fps → 30 样本/秒）
 
 
 class _CaptureThread(QThread):
@@ -92,6 +96,9 @@ class CaptureController(QObject):
         self._paused = False
         self._measured_fps = 0.0
         self._last_frame: tuple[np.ndarray, np.ndarray] | None = None
+        # F11 持续监测：滚动亮度样本（ROI 均值 / 整帧均值），保留约 3 秒窗口
+        self._env_roi_means: deque[float] = deque(maxlen=512)
+        self._env_frame_means: deque[float] = deque(maxlen=512)
 
         fps = float(settings.capture_fps)
         # 实际驱动帧率：文件源以文件为准（start 时刷新），否则用采集设置
@@ -177,11 +184,50 @@ class CaptureController(QObject):
             self._last_frame = (left, right)
             if not self._paused:
                 self._sm.feed_frame(frame_idx, ts_ns, left, right)
+            if frame_idx % _ENV_SAMPLE_STRIDE == 0:
+                self._sample_env(left)
             self.telemetry.emit(
                 self._measured_fps,
                 self._presence.last_ratio if self._presence else 0.0,
                 self._swing.last_energy if self._swing else 0.0,
             )
+
+    # ---- F11 持续环境监测（亮度/频闪，轻量） ----
+
+    def _sample_env(self, left: np.ndarray) -> None:
+        """每 _ENV_SAMPLE_STRIDE 帧采一次亮度样本（抓帧线程内，开销可忽略）。"""
+        roi = self._detector_roi
+        if roi is not None:
+            x, y, w, h = roi
+            self._env_roi_means.append(float(left[y : y + h, x : x + w].mean()))
+        self._env_frame_means.append(float(left.mean()))
+
+    def evaluate_environment(self) -> list[CheckResult]:
+        """用最近约 1 秒的亮度样本跑亮度+频闪检查，返回非 pass 的结果列表。
+
+        由 UI 定时器（~5s）调用；样本不足（采集刚开始）时返回空列表。
+        """
+        with self._lock:
+            roi_means = list(self._env_roi_means)
+            frame_means = list(self._env_frame_means)
+        sample_fps = self._active_fps / _ENV_SAMPLE_STRIDE
+        window = max(8, int(sample_fps))  # 最近约 1 秒
+        if len(frame_means) < window:
+            return []
+        cfg = EnvCheckSettings.from_app_settings(self.settings)
+        results = [
+            check_brightness(
+                roi_means[-window:], None,
+                fail_below=cfg.brightness_fail, warn_below=cfg.brightness_warn,
+                high=cfg.brightness_high, highlight_ratio=cfg.highlight_ratio,
+            ),
+            check_flicker(
+                frame_means[-window:], sample_fps,
+                warn_pct=cfg.flicker_warn_pct, fail_pct=cfg.flicker_fail_pct,
+                mains_tol_hz=cfg.mains_tol_hz,
+            ),
+        ]
+        return [r for r in results if r.status != "pass"]
 
     # ---- 控制 ----
 

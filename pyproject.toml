@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batana-tool"
-version = "0.2.0"
+version = "0.3.0"
 description = "batana-core 素材采集与标注工具（macOS 桌面端，双目挥棒素材生产）"
 readme = "README.md"
 requires-python = ">=3.10"

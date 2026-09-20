@@ -17,6 +17,7 @@ MacBook + Type-C USB3 双目模组的挥棒素材生产工具：人站上打击�
 - F1 双目采集（UVC/左右目切分/无损存储/逐帧时间戳）
 - F2 打击区 ROI 配置 · F3 就位检测 · F4 中文语音引导 · F5 挥棒自动检测分段 · F6 采集会话管理
 - F7 骨架自动标注（MediaPipe 33 点）· F8 骨架叠加审核与手动修正 · F9 片段修剪 · F10 审核标记与 session-schema 导出
+- F11 环境合规主动判定：采集前一键 ~10s 环境体检（光照/频闪/清晰度/背景/水平/构图/帧率/磁盘 8 项，逐项中文整改建议）+ 采集中光照频闪持续监测
 
 ## 边界
 
@@ -38,9 +39,10 @@ python3.12 -m venv .venv
 ```
 
 ```bash
-.venv/bin/pytest                                      # 全部无头测试（66 项，含合成视频端到端与 UI 离屏冒烟）
+.venv/bin/pytest                                      # 全部无头测试（107 项，含合成视频端到端与 UI 离屏冒烟）
 .venv/bin/python -m app.main --gen-synth out.mkv      # 生成合成双目测试视频（2560x800 SBS，8px 视差）
 .venv/bin/python -m samples.gen_synth out.mkv --fps 120 --cycles 3
+.venv/bin/python -m app.envcheck --source samples/output/synth_swing.mkv --duration 5   # 无头环境体检（F11）
 ```
 
 ### GUI 使用
@@ -61,6 +63,7 @@ python3.12 -m venv .venv
 - `app.voice`：`Voice` protocol（`speak(text, priority)`）；`SayVoice`（macOS `say -v Tingting` 队列串行、可静音）；`NullVoice`（测试）；中文文案常量（PRD F4）
 - `app.pose`：`PoseFrame`/`Keypoint`（33 点契约拓扑，`correct()` 手动修正保留自动原值）；`write_pose2d()/read_pose2d()`；`PoseEstimator` protocol + `StubPoseEstimator`（确定性）+ `MediaPipePoseEstimator`（Tasks PoseLandmarker，需下载 `.task` 模型文件）
 - `app.session`：`SessionStore(root)`（index.json 原子落盘、三段式标记 合格/不合格/待复核、修剪、删除、`rebuild()` 崩溃重建、`counts()`）；`export_session(clip, out_root, pose_frames=, ...)`（产出契约目录）；`validate_session_builtin()`（内置必填校验）；`validate_with_core()`（本机存在 batana-core 时调其 `tools/validate_session.py` 全量校验）
+- `app.envcheck`（F11）：8 项纯函数检查（光照/频闪含 FFT 市电特征识别/清晰度/背景干扰/水平/构图/帧率掉帧/磁盘，阈值全参数化见 `defaults.py`）；`EnvironmentChecker(frame_source, roi, settings, report_root)`（`run(duration_s, progress_cb)` 采样并逐项检查，复用 FrameSource 抽象，报告 JSON 落盘 `env_reports/`）；无头 CLI `python -m app.envcheck --source <视频> --duration 10`
 
 ### 本机实测结论（2026-09，macOS arm64 + OpenCV 5.0）
 
@@ -79,8 +82,9 @@ app/
 ├── pose/              # PoseFrame 数据模型、pose2d 读写、Stub/MediaPipe 估计器
 ├── voice/             # Voice 抽象、SayVoice、NullVoice、中文文案
 ├── session/           # SessionStore 素材索引、export_session 契约导出与校验
-└── ui/                # 采集页/审核页/设置页 + 设计系统（theme）+ 采集控制器（线程/信号桥）
-tests/                 # 66 项无头测试：核心层 59 项 + UI 离屏冒烟 7 项
+├── envcheck/          # F11 环境合规检查（8 项纯函数 + EnvironmentChecker + 无头 CLI）
+└── ui/                # 采集页/审核页/设置页 + 设计系统（theme）+ 采集控制器（线程/信号桥）+ EnvCheckDialog
+tests/                 # 107 项无头测试：核心层 59 项 + 环境检查 41 项 + UI 离屏冒烟 7 项
 samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→挥棒→静止，循环）
 ```
 
@@ -96,6 +100,7 @@ samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→�
 | 0.1-draft | 2026-09-20 | 仓库创建，PRD v1.0 定稿（docs/prd.md） | 待同步司令塔 repos.yaml |
 | 0.1 | 2026-09-20 | 核心层实现：采集/检测/语音/姿态/会话导出 + 59 项无头测试 + 合成素材生成器（UI 页面待下一里程碑） | 待同步司令塔 repos.yaml |
 | 0.2 | 2026-09-20 | 桌面 UI：采集/审核/设置三页（战术遥测设计系统）、采集控制器线程信号桥、骨架叠加修正/修剪/标记/批量导出、UI 离屏冒烟 7 项（合计 66 项全绿） | 待同步司令塔 repos.yaml |
+| 0.3 | 2026-09-20 | F11 环境合规主动判定（PRD v1.1）：app/envcheck 8 项检查 + 体检执行器 + 无头 CLI，采集页 [ ENV CHECK ] 对话框、采集中光照/频闪持续监测横幅、设置页环境检查阈值区，新增 41 项无头测试（合计 107 项全绿） | 待同步司令塔 repos.yaml |
 
 ## 许可证
 
