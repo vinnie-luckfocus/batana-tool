@@ -44,6 +44,7 @@ class MainWindow(QMainWindow):
         self.store = store or SessionStore(Path(settings.storage_root))
         self.setWindowTitle("batana-tool — 素材采集与标注")
         self.resize(1280, 800)
+        self.setMinimumSize(1100, 680)  # 最小可用尺寸：小窗口下不重叠不裁剪
         self.setUnifiedTitleAndToolBarOnMac(True)
 
         central = QWidget()
@@ -52,17 +53,17 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
         self.setCentralWidget(central)
 
-        # 工具栏：左侧产品名，中间分段控件（仿 NSToolbar 居中）
+        # 工具栏：左侧产品名，中间分段控件（仿 NSToolbar 居中），垂直居中一线
         top = QWidget()
         top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(16, 10, 16, 6)
+        top_layout.setContentsMargins(16, 8, 16, 8)
         title = QLabel("batana-tool")
         title.setFont(ui_font(14, bold=True))
         subtitle = QLabel("素材采集与标注")
         subtitle.setObjectName("dim")
         subtitle.setFont(ui_font(12))
-        top_layout.addWidget(title)
-        top_layout.addWidget(subtitle)
+        top_layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignVCenter)
+        top_layout.addWidget(subtitle, alignment=Qt.AlignmentFlag.AlignVCenter)
         top_layout.addStretch(1)
 
         segmented = QWidget()
@@ -84,7 +85,7 @@ class MainWindow(QMainWindow):
             self._tabs.append(btn)
             seg_layout.addWidget(btn)
         self._tabs[0].setChecked(True)
-        top_layout.addWidget(segmented)
+        top_layout.addWidget(segmented, alignment=Qt.AlignmentFlag.AlignVCenter)
         top_layout.addStretch(1)
         root.addWidget(top)
 

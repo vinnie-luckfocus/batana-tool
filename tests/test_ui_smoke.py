@@ -104,6 +104,45 @@ def test_vibrancy_graceful_fallback(qapp):
     assert apply_vibrancy(w, material="不存在材质") is False
 
 
+def test_appearance_refresh_restyles(qapp):
+    """浅/深色切换：refresh_theme 重挂全局 QSS；自绘件 paletteChange 重取语义色。"""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QPalette
+
+    from app.ui.theme import apply_theme, refresh_theme
+    from app.ui.widgets import StateBanner
+
+    apply_theme(qapp)
+    before = qapp.styleSheet()
+    # 模拟外观变化（改调色板）后 refresh_theme 重新生成 QSS
+    palette = qapp.palette()
+    palette.setColor(QPalette.ColorRole.Window, palette.color(QPalette.ColorRole.Window).darker(101))
+    qapp.setPalette(palette)
+    refresh_theme(qapp)
+    assert qapp.styleSheet()  # 重挂成功
+    # 状态 pill：paletteChange 事件后内联样式重算（仍含语义色）
+    banner = StateBanner("READY")
+    old = banner.styleSheet()
+    banner.changeEvent(QEvent(QEvent.Type.PaletteChange))
+    assert banner.styleSheet() and "background-color" in banner.styleSheet()
+    assert old  # 原样式同样有效（颜色值是否变化取决于调色板亮度跨越）
+
+
+def test_main_window_minimum_size(qapp, settings, store):
+    """最小尺寸约束：1100×680，且最小尺寸下三页可渲染不崩。"""
+    window = MainWindow(settings, store)
+    assert window.minimumWidth() == 1100
+    assert window.minimumHeight() == 680
+    window.resize(1100, 680)
+    for i in range(3):
+        window.stack.setCurrentIndex(i)
+        qapp.processEvents()
+        window.grab()  # 最小尺寸离屏渲染不崩
+    window.capture_page.shutdown()
+    window.review_page.shutdown()
+    window.close()
+
+
 # ---- ROI 框选 → settings.json ----
 
 

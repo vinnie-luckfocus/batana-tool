@@ -3,11 +3,12 @@
 
 macOS 26 Liquid Glass 观感：连续圆角 10–14px、半透明表面透出背后模糊、
 0.5px 发丝描边、同一方向（正下方微偏移）统一模糊半径的软阴影。
+浅/深色运行时切换：带内联样式的控件实现 paletteChange 重取语义色。
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
@@ -28,6 +29,29 @@ from app.ui.theme import (
 )
 
 
+def _repaint_on_palette_change(widget: QWidget, event) -> bool:
+    """paletteChange 时重绘自绘件；返回是否已处理。"""
+    if event.type() == QEvent.Type.PaletteChange:
+        widget.update()
+        return True
+    return False
+
+
+class _RestyleGuard:
+    """paletteChange 重挂内联样式时的重入保护（setStyleSheet 会再发 PaletteChange）。"""
+
+    _restyling: bool = False
+
+    def _restyle(self, apply) -> None:
+        if self._restyling:
+            return
+        self._restyling = True
+        try:
+            apply()
+        finally:
+            self._restyling = False
+
+
 def soft_shadow(widget: QWidget) -> None:
     """着色软阴影：正下方微偏移、统一模糊半径、带环境色偏色（非黑灰死阴影）。"""
     effect = QGraphicsDropShadowEffect(widget)
@@ -43,13 +67,14 @@ def soft_shadow(widget: QWidget) -> None:
 def card_widget(inner: QWidget | None = None, shadow: bool = False) -> QWidget:
     """圆角半透明卡片容器（0.5px 发丝描边由 QSS 提供；可选软阴影）。
 
+    内边距统一 16px（8pt 网格）。
     频繁重绘的内容（如视频预览）不要开阴影，避免每次重绘走 effect 光栅化。
     """
     w = QWidget()
     w.setObjectName("card")
     if inner is not None:
         layout = QVBoxLayout(w)
-        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.addWidget(inner)
     if shadow:
         soft_shadow(w)
@@ -112,7 +137,7 @@ _STATE_COLORS = {
 }
 
 
-class StateBanner(QLabel):
+class StateBanner(_RestyleGuard, QLabel):
     """状态机当前状态 pill：圆角胶囊，语义色半透明底 + 同色文字 + 内描边高光。
 
     READY 倒计时显示大号数字。
@@ -157,6 +182,12 @@ class StateBanner(QLabel):
             f"border: 1px solid {edge};"
             "border-radius: 14px; padding: 12px 20px;"
         )
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        # 外观切换：pill 语义色随系统浅/深色重取
+        if event.type() == QEvent.Type.PaletteChange:
+            self._restyle(self._refresh)
+        super().changeEvent(event)
 
 
 class MiniBar(QWidget):
@@ -204,16 +235,22 @@ class MiniBar(QWidget):
             painter.drawLine(x, int(y) - 2, x, int(y) + h + 2)
         painter.end()
 
+    def changeEvent(self, event) -> None:  # noqa: N802
+        _repaint_on_palette_change(self, event)
+        super().changeEvent(event)
 
-class CameraIndicator(QLabel):
+
+class CameraIndicator(_RestyleGuard, QLabel):
     """相机连接状态指示：圆点 + 中文文案（系统绿=已连接）。"""
 
     def __init__(self) -> None:
         super().__init__()
         self.setFont(ui_font(12))
+        self._connected = False
         self.set_connected(False)
 
     def set_connected(self, connected: bool) -> None:
+        self._connected = connected
         if connected:
             self.setText("● 相机已连接")
             self.setStyleSheet(f"color: {semantic_hex('green')};")
@@ -221,8 +258,13 @@ class CameraIndicator(QLabel):
             self.setText("○ 相机未连接")
             self.setStyleSheet(f"color: {semantic_hex('fg_dim')};")
 
+    def changeEvent(self, event) -> None:  # noqa: N802
+        if event.type() == QEvent.Type.PaletteChange:
+            self._restyle(lambda: self.set_connected(self._connected))  # 重取语义色
+        super().changeEvent(event)
 
-class NotificationBanner(QLabel):
+
+class NotificationBanner(_RestyleGuard, QLabel):
     """macOS 通知横幅式提示条（环境异常等）：圆角、暖色半透明底、自动随逻辑消隐。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -230,11 +272,19 @@ class NotificationBanner(QLabel):
         self.setObjectName("banner")
         self.setWordWrap(True)
         self.setFont(ui_font(12))
+        self._apply_style()
+        self.hide()
+
+    def _apply_style(self) -> None:
         self.setStyleSheet(
             f"color: {semantic_hex('orange')}; background-color: {tint('orange', 36)};"
             f"border: 1px solid {tint('orange', 110)};"
         )
-        self.hide()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        if event.type() == QEvent.Type.PaletteChange:
+            self._restyle(self._apply_style)
+        super().changeEvent(event)
 
 
 class EmptyStateView(QWidget):

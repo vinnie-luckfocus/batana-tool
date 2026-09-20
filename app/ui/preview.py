@@ -8,7 +8,7 @@ ROI 以左目像素坐标存储与发射；鼠标拖拽框选，释放时发 roi
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -98,6 +98,12 @@ class FrameView(QWidget):
 
     def paint_overlay(self, painter: QPainter) -> None:
         """子类叠加层钩子（ROI / 骨架等）。"""
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        # 外观切换：叠加层语义色随系统浅/深色重取（paint 时实时读色）
+        if event.type() == QEvent.Type.PaletteChange:
+            self.update()
+        super().changeEvent(event)
 
 
 class PreviewWidget(FrameView):

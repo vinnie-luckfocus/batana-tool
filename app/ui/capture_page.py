@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -27,7 +28,7 @@ from app.ui.controller import CaptureController
 from app.ui.envcheck_dialog import EnvCheckDialog
 from app.ui.preview import VIEW_LEFT, VIEW_RIGHT, VIEW_SBS, PreviewWidget
 from app.ui.settings import AppSettings
-from app.ui.theme import semantic_hex, ui_font
+from app.ui.theme import ui_font
 from app.ui.widgets import (
     CameraIndicator,
     MiniBar,
@@ -113,7 +114,7 @@ class CapturePage(QWidget):
         left_layout.setSpacing(6)
         self.roi_hint = QLabel(ROI_HINT_TEXT)
         self.roi_hint.setFont(ui_font(12))
-        self.roi_hint.setStyleSheet(f"color: {semantic_hex('orange')};")
+        self.roi_hint.setObjectName("warning")  # 颜色走全局 QSS，随外观切换
         self.roi_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left_layout.addWidget(self.roi_hint)
         self.preview = PreviewWidget()
@@ -133,31 +134,28 @@ class CapturePage(QWidget):
         self.env_banner = NotificationBanner()
         side.addWidget(self.env_banner)
 
-        # 遥测计数区（两列卡片）
+        # 遥测计数区（两列等宽网格，MiniBar 拉满整行）
         metrics = QWidget()
-        grid = QHBoxLayout(metrics)
+        grid = QGridLayout(metrics)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(24)
-        col1 = QVBoxLayout()
-        col2 = QVBoxLayout()
-        col1.setSpacing(10)
-        col2.setSpacing(10)
-        grid.addLayout(col1)
-        grid.addLayout(col2)
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(10)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
         self.m_total = TelemetryValue("已采集", "0")
         self.m_pass = TelemetryValue("合格", "0")
         self.m_review = TelemetryValue("待审核", "0")
         self.m_fps = TelemetryValue("帧率", "--")
         self.m_ratio = TelemetryValue("就位占比", "--")
         self.m_energy = TelemetryValue("运动能量", "--", accent=True)
-        for w in (self.m_total, self.m_fps):
-            col1.addWidget(w)
-        for w in (self.m_pass, self.m_review):
-            col2.addWidget(w)
-        col1.addWidget(self.m_ratio)
-        col2.addWidget(self.m_energy)
+        grid.addWidget(self.m_total, 0, 0)
+        grid.addWidget(self.m_pass, 0, 1)
+        grid.addWidget(self.m_fps, 1, 0)
+        grid.addWidget(self.m_review, 1, 1)
+        grid.addWidget(self.m_ratio, 2, 0)
+        grid.addWidget(self.m_energy, 2, 1)
         self.energy_bar = MiniBar(maximum=40.0)
-        col2.addWidget(self.energy_bar)
+        grid.addWidget(self.energy_bar, 3, 0, 1, 2)  # 拉满两列
         side.addWidget(card_widget(metrics, shadow=True))
 
         # 控制区

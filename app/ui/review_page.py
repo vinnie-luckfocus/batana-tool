@@ -172,9 +172,10 @@ class ReviewPage(QWidget):
         body.setSpacing(12)
         root.addLayout(body, stretch=1)
 
-        # 左：筛选 + 素材列表 + 批量导出（访达侧栏观感：sidebar 材质毛玻璃面板）
+        # 左：筛选 + 素材列表 + 批量导出（访达侧栏观感：透出窗口毛玻璃）
         left = QWidget()
-        left.setMinimumWidth(320)
+        left.setMinimumWidth(240)   # 弹性 240–320px
+        left.setMaximumWidth(320)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
@@ -184,6 +185,8 @@ class ReviewPage(QWidget):
         self.combo_filter.currentTextChanged.connect(lambda _t: self.refresh_list())
         left_layout.addWidget(self.combo_filter)
         self.list_clips = QListWidget()
+        self.list_clips.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list_clips.setTextElideMode(Qt.TextElideMode.ElideRight)  # 窄栏省略号而非截断
         self.list_clips.currentItemChanged.connect(self._on_item_selected)
         left_layout.addWidget(self.list_clips, stretch=1)
         # 空状态引导视图：无素材时覆盖在列表上（图标位 + 标题 + 说明 + 行动按钮）
@@ -221,7 +224,7 @@ class ReviewPage(QWidget):
         self.player.keypoint_moved.connect(self.correct_keypoint)
         right.addWidget(card_widget(self.player), stretch=1)
 
-        # 走带控制
+        # 走带控制：控件等高、垂直居中一线；左播放组 / 中进度条弹性 / 右信息组
         transport = QWidget()
         tp = QHBoxLayout(transport)
         tp.setContentsMargins(0, 0, 0, 0)
@@ -233,6 +236,7 @@ class ReviewPage(QWidget):
         self.btn_prev.clicked.connect(lambda: self.step(-1))
         self.btn_next.clicked.connect(lambda: self.step(1))
         self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setMinimumWidth(160)  # 小窗口下保持可拖
         self.slider.valueChanged.connect(self._on_slider)
         self.label_frame = QLabel("帧 --/--")
         self.label_frame.setFont(mono_font(12))
@@ -249,14 +253,25 @@ class ReviewPage(QWidget):
         tp.addWidget(self.btn_play)
         tp.addWidget(self.btn_prev)
         tp.addWidget(self.btn_next)
+        tp.addSpacing(8)  # 组间固定间距
         tp.addWidget(self.slider, stretch=1)
+        tp.addSpacing(8)
         tp.addWidget(self.label_frame)
         tp.addWidget(self.btn_trigger)
         tp.addWidget(self.combo_speed)
         tp.addWidget(self.combo_eye)
+        # 等高对齐：取本行控件最大推荐高度，统一固定（按钮/下拉视觉成一线）
+        heights = [w.sizeHint().height() for w in (
+            self.btn_play, self.btn_prev, self.btn_next, self.btn_trigger,
+            self.combo_speed, self.combo_eye,
+        )]
+        row_h = max(heights) if heights else 0
+        for w in (self.btn_play, self.btn_prev, self.btn_next,
+                  self.btn_trigger, self.combo_speed, self.combo_eye):
+            w.setFixedHeight(row_h)
         right.addWidget(card_widget(transport, shadow=True))
 
-        # 操作区：修剪 / 骨架 / 标记
+        # 操作区：修剪 / 骨架 / 标记（三列等宽、列标题与首行控件基线对齐）
         ops = QWidget()
         ops_layout = QHBoxLayout(ops)
         ops_layout.setContentsMargins(0, 0, 0, 0)
@@ -280,7 +295,7 @@ class ReviewPage(QWidget):
         self.btn_trim_save.clicked.connect(self.save_trim)
         trim_box.addWidget(self.btn_trim_save)
         trim_box.addStretch(1)
-        ops_layout.addLayout(trim_box)
+        ops_layout.addLayout(trim_box, stretch=1)
 
         pose_box = QVBoxLayout()
         pose_box.setSpacing(8)
@@ -318,7 +333,7 @@ class ReviewPage(QWidget):
         self.label_pose = TelemetryValue("骨架", "未跑")
         pose_box.addWidget(self.label_pose)
         pose_box.addStretch(1)
-        ops_layout.addLayout(pose_box)
+        ops_layout.addLayout(pose_box, stretch=1)
 
         mark_box = QVBoxLayout()
         mark_box.setSpacing(8)
@@ -332,8 +347,7 @@ class ReviewPage(QWidget):
         for b in (self.btn_pass, self.btn_fail, self.btn_review):
             mark_box.addWidget(b)
         mark_box.addStretch(1)
-        ops_layout.addLayout(mark_box)
-        ops_layout.addStretch(1)
+        ops_layout.addLayout(mark_box, stretch=1)
         right.addWidget(card_widget(ops, shadow=True))
 
         self.status_line = QLabel("选择左侧素材开始审核")

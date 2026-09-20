@@ -154,6 +154,9 @@ QLabel#dim {{
 QLabel#accent {{
     color: {acc_name};
 }}
+QLabel#warning {{
+    color: {semantic_hex("orange")};
+}}
 QLabel#banner {{
     border-radius: 10px;
     padding: 8px 12px;
@@ -229,5 +232,19 @@ QToolTip {{
 
 
 def apply_theme(app) -> None:
-    """把精修 QSS 挂到 QApplication；控件本身交给系统样式引擎渲染。"""
+    """把精修 QSS 挂到 QApplication；控件本身交给系统样式引擎渲染。
+
+    同时监听系统浅色/深色切换（colorSchemeChanged），切换时重新生成 QSS；
+    自绘组件通过各自的 paletteChange 事件重取语义色（见 widgets/preview/player）。
+    """
     app.setStyleSheet(global_stylesheet())
+    if not getattr(app, "_batana_appearance_watch", False):
+        app._batana_appearance_watch = True
+        app.styleHints().colorSchemeChanged.connect(lambda _scheme: refresh_theme(app))
+
+
+def refresh_theme(app) -> None:
+    """外观切换时重新生成并挂载全局 QSS，并触发顶层窗口重绘。"""
+    app.setStyleSheet(global_stylesheet())
+    for window in app.topLevelWidgets():
+        window.update()

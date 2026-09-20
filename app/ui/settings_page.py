@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -54,6 +55,10 @@ class SettingsPage(QWidget):
         form = QFormLayout(form_host)
         form.setContentsMargins(0, 0, 0, 0)
         form.setSpacing(10)
+        form.setHorizontalSpacing(16)
+        # 标签列等宽右对齐，控件列弹性拉伸（8pt 网格统一）
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         def label(text: str) -> QLabel:
             w = QLabel(text)
