@@ -35,9 +35,9 @@ def print_report(report: EnvironmentReport) -> None:
     for r in report.results:
         print(f"{STATUS_LABELS[r.status]:<6}{r.name:<10}{r.measured:<28}{r.suggestion}")
     print("-" * 80)
-    print(f">>> 结论: {report.overall}")
+    print(f"结论: {report.overall}")
     if report.report_path:
-        print(f">>> 报告已保存: {report.report_path}")
+        print(f"报告已保存: {report.report_path}")
 
 
 def main(argv: list[str] | None = None) -> int:

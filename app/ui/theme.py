@@ -1,232 +1,168 @@
-"""战术遥测 / CRT 终端设计系统：配色、字体、全局 QSS。
+"""macOS 原生风格设计系统（Apple HIG）。
 
-硬性规则（见 PRD 界面要求）：
-- 背景 #0A0A0A / #121212（禁纯黑），前景 #EAEAEA；
-- 唯一强调色 #E61919（警示 / 关键数据 / 状态分割线）；
-- 终端绿 #4AF626 只允许用于"相机连接状态"单一指示；
-  （例外：回放画面内的骨架置信度着色属于数据可视化叠加层，见 player.py）
-- 禁渐变、禁圆角（全部直角）、禁柔和阴影；
-- 数据/遥测一律等宽（JetBrains Mono，回退 Menlo/等宽），10–14px、字距加宽、大写；
-- 结构性大标题用粗黑无衬线（Helvetica Neue Bold / Arial Black）、大写、负字距；
-- 布局分隔用 1px 网格缝（父背景深色 + 子块 #121212 + spacing 1px）。
+设计原则：
+- 原生优先：控件默认交给 Qt 的 macOS 样式引擎渲染，QSS 只用于自定义组件
+  （卡片容器、状态 pill、分段控件、通知横幅）与少量精修，不覆盖系统控件外观；
+- 跟随系统外观：浅色/深色由 Qt 自动跟随 macOS，表面色取 QPalette 系统角色，
+  强调色与语义色取 macOS 系统色（浅/深两套，运行时按当前外观选择）；
+- 字体：正文用系统字体（SF Pro，Qt 默认；中文 PingFang SC 自动回退），
+  数值读数用等宽数字字体（SF Mono / Menlo），标题加粗、sentence case；
+- 表面：圆角 8px 卡片（比窗口浅一级），发丝级半透明分隔，无堆叠阴影；
+- 禁 ASCII 装饰、禁全大写标题、禁等宽正文。
 """
 
 from __future__ import annotations
 
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QPalette
 
-# ---- 配色 ----
+# ---- 语义色（macOS 系统色，浅色外观基准值）----
+# accent = 系统蓝；状态语义：绿=就绪、蓝=进行中、红=异常/挥棒提示
 COLORS = {
-    "bg_deep": "#0A0A0A",    # 应用底色 / 网格缝
-    "bg_block": "#121212",   # 子块背景
-    "bg_raise": "#1A1A1A",   # 输入框 / 列表行 hover 底
-    "fg": "#EAEAEA",         # 主前景
-    "fg_dim": "#7A7A7A",     # 次级文字 / 标签
-    "accent": "#E61919",     # 唯一强调色（红）
-    "terminal": "#4AF626",   # 终端绿（仅相机连接指示）
-    "border": "#2A2A2A",     # 控件内描边
+    "accent": "#007AFF",
+    "blue": "#007AFF",
+    "green": "#28CD41",
+    "red": "#FF3B30",
+    "orange": "#FF9500",
+    "yellow": "#FFCC00",
+    "fg": "#1D1D1F",
+    "fg_dim": "#86868B",
 }
 
-# ---- 字体族 ----
-MONO_FAMILIES = ["JetBrains Mono", "Menlo", "SF Mono", "Courier New", "monospace"]
-HEADER_FAMILIES = ["Helvetica Neue", "Arial Black", "Arial", "sans-serif"]
+# 深色外观对应值
+_COLORS_DARK = {
+    "accent": "#0A84FF",
+    "blue": "#0A84FF",
+    "green": "#30D158",
+    "red": "#FF453A",
+    "orange": "#FF9F0A",
+    "yellow": "#FFD60A",
+    "fg": "#F5F5F7",
+    "fg_dim": "#98989D",
+}
+
+# 等宽数字字体族（仅用于遥测/计数等数值读数）
+MONO_FAMILIES = ["SF Mono", "Menlo", "monospace"]
 
 
-def mono_font(size: int = 11, bold: bool = False, letter_spacing: float = 1.5) -> QFont:
-    """遥测等宽字体：加宽字距，调用方负责 .upper() 大写文本。"""
+def is_dark_mode() -> bool:
+    """当前外观是否深色：优先 styleHints().colorScheme()，回退窗口底色亮度。"""
+    app = QGuiApplication.instance()
+    if app is None:
+        return False
+    scheme = app.styleHints().colorScheme()
+    if scheme == Qt.ColorScheme.Dark:
+        return True
+    if scheme == Qt.ColorScheme.Light:
+        return False
+    window = app.palette().color(QPalette.ColorRole.Window)
+    return window.lightness() < 128
+
+
+def semantic_color(name: str) -> QColor:
+    """按当前外观取语义色（浅色外观与 COLORS 字典一致）。"""
+    table = _COLORS_DARK if is_dark_mode() else COLORS
+    return QColor(table[name])
+
+
+def semantic_hex(name: str) -> str:
+    """semantic_color 的十六进制字符串形式（拼 QSS 用）。"""
+    return semantic_color(name).name()
+
+
+def tint(name: str, alpha: int = 40) -> str:
+    """语义色的半透明填充色（pill / 横幅底色），返回 rgba() 字符串。"""
+    c = semantic_color(name)
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha})"
+
+
+# ---- 字体 ----
+
+
+def ui_font(size: int = 13, bold: bool = False) -> QFont:
+    """系统字体（SF Pro，Qt 默认族即系统字体；中文自动回退 PingFang SC）。"""
+    font = QFont()
+    font.setPixelSize(size)
+    font.setBold(bold)
+    return font
+
+
+def title_font(size: int = 20) -> QFont:
+    """区段/结论标题：系统字体加粗，sentence case。"""
+    return ui_font(size, bold=True)
+
+
+def mono_font(size: int = 13, bold: bool = False) -> QFont:
+    """等宽数字字体：仅用于帧率/能量/计数等数值读数，避免数字跳动。"""
     font = QFont()
     font.setFamilies(MONO_FAMILIES)
     font.setPixelSize(size)
     font.setBold(bold)
-    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, letter_spacing)
     return font
 
 
-def header_font(size: int = 28) -> QFont:
-    """结构性大标题：粗黑无衬线、负字距（文本需大写）。"""
-    font = QFont()
-    font.setFamilies(HEADER_FAMILIES)
-    font.setPixelSize(size)
-    font.setBold(True)
-    font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 96.0)
-    return font
+# ---- 全局 QSS（只精修自定义组件，系统控件交给 macOS 样式引擎）----
+
+
+def _rgba(c: QColor, alpha: int) -> str:
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha})"
 
 
 def global_stylesheet() -> str:
-    """全局 QSS：直角、无渐变、无阴影，1px 深色缝分隔由布局 spacing 实现。"""
-    c = COLORS
+    """按当前外观生成精修 QSS：卡片面、次级文字、分段控件、通知横幅等。"""
+    app = QGuiApplication.instance()
+    palette = app.palette() if app is not None else QPalette()
+    window = palette.color(QPalette.ColorRole.Window)
+    text = palette.color(QPalette.ColorRole.Text)
+    dark = is_dark_mode()
+    # 卡片面：比窗口浅一级（浅色外观下接近纯白）
+    card = window.lighter(112) if dark else QColor("#FFFFFF")
+    hairline = _rgba(text, 28 if dark else 22)          # 发丝级分隔线
+    dim = _rgba(text, 150)                               # 次级文字
+    track = _rgba(text, 14 if dark else 18)              # 分段控件轨道底
+    accent = semantic_hex("accent")
     return f"""
-QWidget {{
-    background-color: {c['bg_deep']};
-    color: {c['fg']};
+QWidget#card {{
+    background-color: {card.name()};
+    border-radius: 8px;
+}}
+QFrame#hairline {{
+    background-color: {hairline};
+    max-height: 1px;
     border: none;
-    selection-background-color: {c['accent']};
-    selection-color: {c['fg']};
-}}
-QWidget#block {{
-    background-color: {c['bg_block']};
-}}
-QLabel {{
-    background-color: transparent;
 }}
 QLabel#dim {{
-    color: {c['fg_dim']};
+    color: {dim};
 }}
 QLabel#accent {{
-    color: {c['accent']};
+    color: {accent};
 }}
-QLabel#terminal {{
-    color: {c['terminal']};
+QWidget#segmentedTrack {{
+    background-color: {track};
+    border-radius: 7px;
 }}
-QPushButton {{
-    background-color: {c['bg_block']};
-    color: {c['fg']};
-    border: 1px solid {c['border']};
-    border-radius: 0px;
-    padding: 6px 14px;
-}}
-QPushButton:hover {{
-    border: 1px solid {c['fg_dim']};
-}}
-QPushButton:pressed {{
-    background-color: {c['accent']};
-    color: {c['fg']};
-}}
-QPushButton:disabled {{
-    color: {c['fg_dim']};
-    border: 1px solid {c['border']};
-}}
-QPushButton#primary {{
-    background-color: {c['accent']};
-    color: {c['fg']};
-    border: 1px solid {c['accent']};
-}}
-QPushButton#primary:pressed {{
-    background-color: {c['fg']};
-    color: {c['bg_deep']};
-}}
-QPushButton#tab {{
-    background-color: {c['bg_deep']};
-    border: none;
-    border-bottom: 2px solid {c['bg_deep']};
-    padding: 8px 20px;
-}}
-QPushButton#tab:checked {{
-    border-bottom: 2px solid {c['accent']};
-    color: {c['accent']};
-}}
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    background-color: {c['bg_raise']};
-    color: {c['fg']};
-    border: 1px solid {c['border']};
-    border-radius: 0px;
-    padding: 4px 8px;
-}}
-QComboBox QAbstractItemView {{
-    background-color: {c['bg_block']};
-    border: 1px solid {c['border']};
-    outline: none;
-}}
-QListWidget, QTableWidget, QTreeWidget {{
-    background-color: {c['bg_block']};
-    border: none;
-    outline: none;
-    gridline-color: {c['bg_deep']};
-}}
-QListWidget::item, QTableWidget::item {{
-    padding: 4px 8px;
-    border-bottom: 1px solid {c['bg_deep']};
-}}
-QListWidget::item:selected, QTableWidget::item:selected {{
-    background-color: {c['bg_raise']};
-    color: {c['accent']};
-    border-left: 2px solid {c['accent']};
-}}
-QSlider::groove:horizontal {{
-    height: 2px;
-    background: {c['border']};
-}}
-QSlider::handle:horizontal {{
-    width: 10px;
-    height: 16px;
-    margin: -7px 0;
-    background: {c['accent']};
-    border-radius: 0px;
-}}
-QSlider::sub-page:horizontal {{
-    background: {c['accent']};
-}}
-QProgressBar {{
-    background-color: {c['bg_raise']};
-    border: 1px solid {c['border']};
-    border-radius: 0px;
-    text-align: center;
-}}
-QProgressBar::chunk {{
-    background-color: {c['accent']};
-}}
-QCheckBox, QRadioButton {{
-    spacing: 8px;
+QPushButton#segment {{
     background-color: transparent;
+    border: none;
+    border-radius: 5px;
+    padding: 3px 16px;
+    color: {dim};
 }}
-QCheckBox::indicator, QRadioButton::indicator {{
-    width: 14px;
-    height: 14px;
-    border: 1px solid {c['border']};
-    border-radius: 0px;
-    background-color: {c['bg_raise']};
+QPushButton#segment:checked {{
+    background-color: {card.name()};
+    color: {text.name()};
 }}
-QCheckBox::indicator:checked {{
-    background-color: {c['accent']};
-    border: 1px solid {c['accent']};
-}}
-QGroupBox {{
-    border: 1px solid {c['border']};
-    border-radius: 0px;
-    margin-top: 14px;
-    padding-top: 8px;
-}}
-QGroupBox::title {{
-    subcontrol-origin: margin;
-    left: 8px;
-    color: {c['fg_dim']};
-}}
-QScrollBar:vertical {{
-    background: {c['bg_deep']};
-    width: 8px;
-    margin: 0;
-}}
-QScrollBar::handle:vertical {{
-    background: {c['border']};
-    min-height: 24px;
-}}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-    height: 0;
-}}
-QScrollBar:horizontal {{
-    background: {c['bg_deep']};
-    height: 8px;
-    margin: 0;
-}}
-QScrollBar::handle:horizontal {{
-    background: {c['border']};
-    min-width: 24px;
-}}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
-    width: 0;
+QLabel#banner {{
+    border-radius: 8px;
+    padding: 8px 12px;
 }}
 QToolTip {{
-    background-color: {c['bg_block']};
-    color: {c['fg']};
-    border: 1px solid {c['accent']};
-    padding: 4px;
-}}
-QFileDialog, QMessageBox {{
-    background-color: {c['bg_deep']};
+    border-radius: 6px;
+    padding: 6px 8px;
 }}
 """
 
 
-def apply_theme(widget) -> None:
-    """把全局 QSS 挂到 QApplication（或顶层部件）。"""
-    widget.setStyleSheet(global_stylesheet())
+def apply_theme(app) -> None:
+    """把精修 QSS 挂到 QApplication；控件本身交给系统样式引擎渲染。"""
+    app.setStyleSheet(global_stylesheet())

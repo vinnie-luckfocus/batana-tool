@@ -1,7 +1,7 @@
-"""环境体检对话框（PRD F11 UI）：进度条 + 逐项结果表 + 大字 overall 结论。
+"""环境体检对话框（PRD F11 UI）：进度条 + 逐项结果表 + 大号 overall 结论。
 
-检查在 QThread（_EnvCheckWorker）中执行，UI 不卡；结果表状态列用色块：
-pass 白 / warn 黄 / fail 红 #E61919 / skip 灰。整体设计遵循战术遥测设计系统。
+检查在 QThread（_EnvCheckWorker）中执行，UI 不卡；结果表状态列用系统语义色：
+pass 绿 / warn 橙 / fail 红 / skip 灰。整体设计遵循 macOS 原生设计系统。
 """
 
 from __future__ import annotations
@@ -32,21 +32,20 @@ from app.envcheck.models import (
     STATUS_SKIP,
     STATUS_WARN,
 )
-from app.ui.theme import COLORS, header_font, mono_font
-from app.ui.widgets import SectionHeader, block_widget
+from app.ui.theme import COLORS, semantic_hex, title_font, ui_font
 
-# 状态色块（warn 黄为 F11 需求指定的例外色，不在全局色板内）
+# 状态列底色（系统语义色；显式底色在浅/深外观下均可读）
 _STATUS_COLORS = {
-    STATUS_PASS: "#EAEAEA",
-    STATUS_WARN: "#E6C619",
-    STATUS_FAIL: COLORS["accent"],
+    STATUS_PASS: COLORS["green"],
+    STATUS_WARN: COLORS["orange"],
+    STATUS_FAIL: COLORS["red"],
     STATUS_SKIP: COLORS["fg_dim"],
 }
 
 _OVERALL_COLORS = {
-    OVERALL_OK: COLORS["fg"],
-    OVERALL_WARN: "#E6C619",
-    OVERALL_FAIL: COLORS["accent"],
+    OVERALL_OK: "green",
+    OVERALL_WARN: "orange",
+    OVERALL_FAIL: "red",
 }
 
 
@@ -87,7 +86,7 @@ class EnvCheckDialog(QDialog):
         self.duration_s = duration_s
         self._worker: _EnvCheckWorker | None = None
         self.report: EnvironmentReport | None = None
-        self.setWindowTitle("ENV CHECK // 环境合规体检")
+        self.setWindowTitle("环境体检")
         self.resize(760, 520)
         self._build_ui()
 
@@ -95,26 +94,28 @@ class EnvCheckDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(1, 1, 1, 1)
-        root.setSpacing(1)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(12)
 
         top = QWidget()
         top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(10, 6, 10, 6)
-        top_layout.addWidget(SectionHeader("[ ENV CHECK ]"))
-        self.label_hint = QLabel(f"采样 {self.duration_s:.0f}s，请保持采集位实景")
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("环境体检")
+        title.setFont(title_font(17))
+        top_layout.addWidget(title)
+        self.label_hint = QLabel(f"采样 {self.duration_s:.0f} 秒，请保持采集位实景")
         self.label_hint.setObjectName("dim")
-        self.label_hint.setFont(mono_font(9, letter_spacing=2.0))
+        self.label_hint.setFont(ui_font(12))
+        top_layout.addSpacing(10)
         top_layout.addWidget(self.label_hint)
         top_layout.addStretch(1)
-        root.addWidget(block_widget(top))
+        root.addWidget(top)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 8)
         self.progress.setValue(0)
-        self.progress.setFont(mono_font(10))
         self.progress.setFormat("%v / 8")
-        root.addWidget(block_widget(self.progress))
+        root.addWidget(self.progress)
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["状态", "检查项", "实测值", "建议"])
@@ -124,27 +125,24 @@ class EnvCheckDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setFont(mono_font(10))
-        root.addWidget(block_widget(self.table), stretch=1)
+        root.addWidget(self.table, stretch=1)
 
-        # 底部：overall 大字结论 + 操作按钮
+        # 底部：overall 大号结论 + 操作按钮
         bottom = QWidget()
         bt = QHBoxLayout(bottom)
         bt.setContentsMargins(0, 0, 0, 0)
         self.label_overall = QLabel("--")
-        self.label_overall.setFont(header_font(30))
+        self.label_overall.setFont(title_font(24))
         self.label_overall.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bt.addWidget(self.label_overall, stretch=1)
         self.btn_start = QPushButton("开始检查")
-        self.btn_start.setObjectName("primary")
-        self.btn_start.setFont(mono_font(11, bold=True))
+        self.btn_start.setDefault(True)
         self.btn_start.clicked.connect(self.start_check)
         self.btn_close = QPushButton("关闭")
-        self.btn_close.setFont(mono_font(11))
         self.btn_close.clicked.connect(self.reject)
         bt.addWidget(self.btn_start)
         bt.addWidget(self.btn_close)
-        root.addWidget(block_widget(bottom))
+        root.addWidget(bottom)
 
     # ---- 检查流程 ----
 
@@ -155,7 +153,7 @@ class EnvCheckDialog(QDialog):
         self.btn_start.setEnabled(False)
         self.table.setRowCount(0)
         self.label_overall.setText("检查中…")
-        self.label_overall.setStyleSheet(f"color: {COLORS['fg_dim']};")
+        self.label_overall.setStyleSheet(f"color: {semantic_hex('fg_dim')};")
         self.progress.setValue(0)
         self._worker = _EnvCheckWorker(self.checker, self.duration_s, parent=self)
         self._worker.progressed.connect(self._on_progress)
@@ -166,7 +164,7 @@ class EnvCheckDialog(QDialog):
     def _on_progress(self, done: int, total: int, name: str) -> None:
         self.progress.setMaximum(total)
         self.progress.setValue(done)
-        self.label_hint.setText(f">>> {name}")
+        self.label_hint.setText(name)
 
     def _on_finished(self, report: EnvironmentReport) -> None:
         self.report = report
@@ -174,24 +172,24 @@ class EnvCheckDialog(QDialog):
         self.btn_start.setEnabled(True)
         self.btn_start.setText("重新检查")
         self.label_hint.setText(
-            f">>> 报告已保存 {report.report_path}" if report.report_path else ">>> 检查完成"
+            f"报告已保存 {report.report_path}" if report.report_path else "检查完成"
         )
 
     def _on_failed(self, message: str) -> None:
         self.label_overall.setText("检查失败")
-        self.label_overall.setStyleSheet(f"color: {COLORS['accent']};")
-        self.label_hint.setText(f">>> ERROR: {message}")
+        self.label_overall.setStyleSheet(f"color: {semantic_hex('red')};")
+        self.label_hint.setText(f"错误：{message}")
         self.btn_start.setEnabled(True)
 
     # ---- 报告渲染（测试可直接调用） ----
 
     def show_report(self, report: EnvironmentReport) -> None:
-        """把报告渲染进结果表与 overall 大字结论。"""
+        """把报告渲染进结果表与 overall 大号结论。"""
         self.table.setRowCount(len(report.results))
         for row, r in enumerate(report.results):
             status_item = QTableWidgetItem(STATUS_LABELS[r.status])
             status_item.setBackground(QColor(_STATUS_COLORS[r.status]))
-            status_item.setForeground(QColor(COLORS["bg_deep"]))
+            status_item.setForeground(QColor("#FFFFFF"))
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 0, status_item)
             self.table.setItem(row, 1, QTableWidgetItem(r.name))
@@ -199,7 +197,7 @@ class EnvCheckDialog(QDialog):
             self.table.setItem(row, 3, QTableWidgetItem(r.suggestion))
         overall = report.overall
         self.label_overall.setText(overall)
-        self.label_overall.setStyleSheet(f"color: {_OVERALL_COLORS[overall]};")
+        self.label_overall.setStyleSheet(f"color: {semantic_hex(_OVERALL_COLORS[overall])};")
 
     # ---- 关闭 ----
 

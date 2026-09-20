@@ -10,19 +10,21 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from app.ui.settings import AppSettings
-from app.ui.theme import mono_font
-from app.ui.widgets import SectionHeader, block_widget
+from app.ui.theme import ui_font
+from app.ui.widgets import SectionHeader, card_widget
 
 _FORMATS = ["auto", "mono8", "yuy2", "mjpeg"]
 _RESOLUTIONS = ["2560x800", "1280x400", "640x200"]
@@ -45,12 +47,8 @@ class SettingsPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(1, 1, 1, 1)
-        root.setSpacing(1)
-
-        top = block_widget(SectionHeader("[ SETTINGS ]"))
-        top.layout().setContentsMargins(10, 6, 10, 6)
-        root.addWidget(top)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(12)
 
         form_host = QWidget()
         form = QFormLayout(form_host)
@@ -60,10 +58,10 @@ class SettingsPage(QWidget):
         def label(text: str) -> QLabel:
             w = QLabel(text)
             w.setObjectName("dim")
-            w.setFont(mono_font(10, letter_spacing=2.0))
+            w.setFont(ui_font(12))
             return w
 
-        form.addRow(SectionHeader(">>> 采集模式"))
+        form.addRow(SectionHeader("采集模式"))
         self.combo_resolution = QComboBox()
         self.combo_resolution.addItems(_RESOLUTIONS)
         form.addRow(label("分辨率"), self.combo_resolution)
@@ -78,7 +76,7 @@ class SettingsPage(QWidget):
         self.spin_camera.setRange(0, 8)
         form.addRow(label("UVC 设备序号"), self.spin_camera)
 
-        form.addRow(SectionHeader(">>> 检测阈值"))
+        form.addRow(SectionHeader("检测阈值"))
         self.spin_presence = QDoubleSpinBox()
         self.spin_presence.setRange(0.001, 1.0)
         self.spin_presence.setDecimals(3)
@@ -107,16 +105,15 @@ class SettingsPage(QWidget):
         self.spin_buffer.setDecimals(1)
         form.addRow(label("预录缓冲（秒）"), self.spin_buffer)
 
-        form.addRow(SectionHeader(">>> 语音"))
+        form.addRow(SectionHeader("语音"))
         self.chk_voice = QCheckBox("启用语音引导")
-        self.chk_voice.setFont(mono_font(10))
         form.addRow(label("语音开关"), self.chk_voice)
         self.spin_rate = QSpinBox()
         self.spin_rate.setRange(80, 400)
         self.spin_rate.setSingleStep(10)
         form.addRow(label("语速（词/分）"), self.spin_rate)
 
-        form.addRow(SectionHeader(">>> 存储"))
+        form.addRow(SectionHeader("存储"))
         dir_row = QHBoxLayout()
         self.edit_root = QLineEdit()
         self.btn_browse = QPushButton("…")
@@ -137,7 +134,7 @@ class SettingsPage(QWidget):
         self.edit_core_repo.setPlaceholderText("留空 = 自动探测常见位置")
         form.addRow(label("CORE 仓路径"), self.edit_core_repo)
 
-        form.addRow(SectionHeader(">>> 环境检查"))
+        form.addRow(SectionHeader("环境检查"))
         self.spin_env_bright_fail = QDoubleSpinBox()
         self.spin_env_bright_fail.setRange(0, 255)
         self.spin_env_bright_fail.setDecimals(0)
@@ -181,10 +178,15 @@ class SettingsPage(QWidget):
         # L5 磁盘占用静态估算（计划段数 × 单段大小）
         self.label_disk_est = QLabel("")
         self.label_disk_est.setObjectName("dim")
-        self.label_disk_est.setFont(mono_font(10, letter_spacing=1.5))
+        self.label_disk_est.setFont(ui_font(12))
         form.addRow(label("预计磁盘占用"), self.label_disk_est)
 
-        root.addWidget(block_widget(form_host), stretch=1)
+        # 表单超高时可滚动（HIG：设置内容垂直滚动）
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(card_widget(form_host))
+        root.addWidget(scroll, stretch=1)
 
         bottom = QWidget()
         bt = QHBoxLayout(bottom)
@@ -194,10 +196,10 @@ class SettingsPage(QWidget):
         self.btn_save.clicked.connect(self.save)
         self.label_saved = QLabel("")
         self.label_saved.setObjectName("dim")
-        self.label_saved.setFont(mono_font(10, letter_spacing=1.5))
+        self.label_saved.setFont(ui_font(12))
         bt.addWidget(self.btn_save)
         bt.addWidget(self.label_saved, stretch=1)
-        root.addWidget(block_widget(bottom))
+        root.addWidget(card_widget(bottom))
 
     def _load_values(self) -> None:
         s = self.settings
@@ -280,4 +282,4 @@ class SettingsPage(QWidget):
         s.env_planned_clips = int(self.spin_env_clips.value())
         s.env_est_mb_per_clip = float(self.spin_env_mb.value())
         path = s.save()
-        self.label_saved.setText(f">>> 已保存 {Path(path).name}")
+        self.label_saved.setText(f"已保存 {Path(path).name}")

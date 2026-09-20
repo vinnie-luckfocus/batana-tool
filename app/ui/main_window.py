@@ -1,9 +1,10 @@
-"""主窗口：顶部页签切换 + QStackedWidget 三页（采集 / 审核 / 设置）。"""
+"""主窗口：顶部工具栏式分段控件 + QStackedWidget 三页（采集 / 审核 / 设置）。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -22,13 +23,13 @@ from app.ui.controller import CaptureController
 from app.ui.review_page import ReviewPage
 from app.ui.settings import AppSettings
 from app.ui.settings_page import SettingsPage
-from app.ui.theme import COLORS, header_font, mono_font
+from app.ui.theme import ui_font
 
-_PAGES = [("CAPTURE", "采集"), ("REVIEW", "审核"), ("SETTINGS", "设置")]
+_PAGES = [("采集",), ("审核",), ("设置",)]
 
 
 class MainWindow(QMainWindow):
-    """batana-tool 主窗口：战术遥测风格三页结构。"""
+    """batana-tool 主窗口：macOS 原生风格，分段控件切换三页。"""
 
     def __init__(
         self,
@@ -40,42 +41,50 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.settings = settings
         self.store = store or SessionStore(Path(settings.storage_root))
-        self.setWindowTitle("BATANA-TOOL // 素材采集与标注")
+        self.setWindowTitle("batana-tool — 素材采集与标注")
         self.resize(1280, 800)
+        self.setUnifiedTitleAndToolBarOnMac(True)
 
         central = QWidget()
         root = QVBoxLayout(central)
-        root.setContentsMargins(1, 1, 1, 1)
-        root.setSpacing(1)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
         self.setCentralWidget(central)
 
-        # 顶栏：结构性大标题 + 页签（1px 网格缝）
+        # 工具栏：左侧产品名，中间分段控件（仿 NSToolbar 居中）
         top = QWidget()
         top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(12, 8, 12, 4)
-        title = QLabel("BATANA-TOOL")
-        title.setFont(header_font(22))
-        title.setStyleSheet(f"color: {COLORS['fg']};")
-        subtitle = QLabel("素材采集与标注 // SESSION RECORDER")
+        top_layout.setContentsMargins(16, 10, 16, 6)
+        title = QLabel("batana-tool")
+        title.setFont(ui_font(14, bold=True))
+        subtitle = QLabel("素材采集与标注")
         subtitle.setObjectName("dim")
-        subtitle.setFont(mono_font(9, letter_spacing=2.5))
+        subtitle.setFont(ui_font(12))
         top_layout.addWidget(title)
         top_layout.addWidget(subtitle)
         top_layout.addStretch(1)
 
+        segmented = QWidget()
+        segmented.setObjectName("segmentedTrack")
+        seg_layout = QHBoxLayout(segmented)
+        seg_layout.setContentsMargins(2, 2, 2, 2)
+        seg_layout.setSpacing(0)
         self._tab_group = QButtonGroup(self)
         self._tab_group.setExclusive(True)
         self._tabs: list[QPushButton] = []
-        for i, (name, _zh) in enumerate(_PAGES):
-            btn = QPushButton(f"[ {name} ]")
-            btn.setObjectName("tab")
+        for i, (name,) in enumerate(_PAGES):
+            btn = QPushButton(name)
+            btn.setObjectName("segment")
             btn.setCheckable(True)
-            btn.setFont(mono_font(11, bold=True, letter_spacing=2.0))
+            btn.setFont(ui_font(13))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _c=False, idx=i: self.stack.setCurrentIndex(idx))
             self._tab_group.addButton(btn, i)
             self._tabs.append(btn)
-            top_layout.addWidget(btn)
+            seg_layout.addWidget(btn)
         self._tabs[0].setChecked(True)
+        top_layout.addWidget(segmented)
+        top_layout.addStretch(1)
         root.addWidget(top)
 
         # 三页
@@ -96,7 +105,7 @@ class MainWindow(QMainWindow):
         # H5：启动时静默重建索引，补登到素材时状态栏提示
         recovered = self.store.rebuild()
         if recovered > 0:
-            self.capture_page.status_line.setText(f">>> 已恢复 {recovered} 段素材（索引重建）")
+            self.capture_page.status_line.setText(f"已恢复 {recovered} 段素材（索引重建）")
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)

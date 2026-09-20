@@ -478,7 +478,7 @@ def test_capture_page_envcheck_button_and_monitor(qapp, tmp_path):
         settings, store, presence=FakePresence(), swing=FakeSwing(), voice=NullVoice()
     )
     page = CapturePage(settings, store, controller=controller)
-    assert page.btn_envcheck.text().startswith("[ ENV CHECK ]")
+    assert "环境体检" in page.btn_envcheck.text()
 
     # 监测仅在采集中进行：mock running=True（无头测试不起抓帧线程）
     from unittest.mock import PropertyMock, patch

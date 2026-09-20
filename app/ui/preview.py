@@ -1,7 +1,7 @@
 """采集预览控件：双目画面显示 + ROI 框选 + 水平参考线（PRD F2）。
 
 FrameView 为画面坐标映射基类（审核页回放器复用）；
-PreviewWidget 叠加：ROI 红色 1px 实线 + 四角十字准线、虚线水平参考线。
+PreviewWidget 叠加：ROI 系统红描边 + 半透明填充 + 四角手柄、虚线水平参考线。
 ROI 以左目像素坐标存储与发射；鼠标拖拽框选，释放时发 roi_changed。
 """
 
@@ -12,7 +12,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from app.ui.theme import COLORS, mono_font
+from app.ui.theme import semantic_color, ui_font
 
 RoiTuple = tuple[int, int, int, int]
 
@@ -83,14 +83,16 @@ class FrameView(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(COLORS["bg_deep"]))
+        painter.fillRect(self.rect(), QColor(0, 0, 0))  # 画面区标准黑底
         self._update_content_rect()
         if self._image is not None:
             painter.drawImage(self._content, self._image)
         else:
-            painter.setPen(QColor(COLORS["fg_dim"]))
-            painter.setFont(mono_font(12, letter_spacing=3.0))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "[ NO SIGNAL ]")
+            dim = self.palette().color(self.foregroundRole())
+            dim.setAlpha(120)
+            painter.setPen(dim)
+            painter.setFont(ui_font(13))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "无信号")
         self.paint_overlay(painter)
         painter.end()
 
@@ -195,12 +197,13 @@ class PreviewWidget(FrameView):
     def paint_overlay(self, painter: QPainter) -> None:
         if self._image is None:
             return
-        # 水平参考线（虚线，辅助调平）
+        # 水平参考线（虚线，辅助调平）：半透明白，弱存在感
         iw, ih = self.image_size()
         if ih > 0:
             p0 = self.image_to_widget(0, ih / 2)
             p1 = self.image_to_widget(iw, ih / 2)
-            pen = QPen(QColor(COLORS["fg_dim"]), 1, Qt.PenStyle.DashLine)
+            guide = QColor(255, 255, 255, 70)
+            pen = QPen(guide, 1, Qt.PenStyle.DashLine)
             painter.setPen(pen)
             painter.drawLine(p0, p1)
         # ROI：常显已存 ROI 或拖拽中的临时框
@@ -213,12 +216,17 @@ class PreviewWidget(FrameView):
         p0 = self.image_to_widget(x, y)
         p1 = self.image_to_widget(x + w, y + h)
         rect = QRectF(p0, p1)
-        # 红色 1px 实线框
-        painter.setPen(QPen(QColor(COLORS["accent"]), 1))
+        red = semantic_color("red")
+        # 系统红 2px 描边 + 半透明填充
+        fill = QColor(red)
+        fill.setAlpha(50)
+        painter.fillRect(rect, fill)
+        painter.setPen(QPen(red, 2))
         painter.drawRect(rect)
-        # 四角十字准线
-        arm = 6.0
+        # 四角方形手柄（选中框语义）
+        handle = 7.0
+        painter.setBrush(red)
+        painter.setPen(Qt.PenStyle.NoPen)
         for cx, cy in ((rect.left(), rect.top()), (rect.right(), rect.top()),
                        (rect.left(), rect.bottom()), (rect.right(), rect.bottom())):
-            painter.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
-            painter.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
+            painter.drawRect(QRectF(cx - handle / 2, cy - handle / 2, handle, handle))

@@ -27,14 +27,15 @@ from app.ui.controller import CaptureController
 from app.ui.envcheck_dialog import EnvCheckDialog
 from app.ui.preview import VIEW_LEFT, VIEW_RIGHT, VIEW_SBS, PreviewWidget
 from app.ui.settings import AppSettings
-from app.ui.theme import COLORS, mono_font
+from app.ui.theme import semantic_hex, ui_font
 from app.ui.widgets import (
     CameraIndicator,
     MiniBar,
+    NotificationBanner,
     SectionHeader,
     StateBanner,
     TelemetryValue,
-    block_widget,
+    card_widget,
 )
 from app.voice import PROMPT_NO_SWING, error_prompt
 
@@ -89,62 +90,58 @@ class CapturePage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(1, 1, 1, 1)
-        root.setSpacing(1)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(12)
 
-        # 顶栏：ASCII 区段头 + 相机指示（终端绿唯一用途）
+        # 顶栏：相机连接状态（右侧）
         top = QWidget()
         top_layout = QHBoxLayout(top)
-        top_layout.setContentsMargins(10, 6, 10, 6)
-        header = SectionHeader("[ CAPTURE ]")
-        self.camera_indicator = CameraIndicator()
-        top_layout.addWidget(header)
+        top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.addStretch(1)
+        self.camera_indicator = CameraIndicator()
         top_layout.addWidget(self.camera_indicator)
-        root.addWidget(block_widget(top))
+        root.addWidget(top)
 
         body = QHBoxLayout()
-        body.setSpacing(1)
+        body.setSpacing(12)
         root.addLayout(body, stretch=1)
 
         # 左：预览（ROI 框选区）+ 未框选常显提示（M5 首次引导）
         left_col = QWidget()
         left_layout = QVBoxLayout(left_col)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(4)
+        left_layout.setSpacing(6)
         self.roi_hint = QLabel(ROI_HINT_TEXT)
-        self.roi_hint.setFont(mono_font(10, bold=True, letter_spacing=1.5))
-        self.roi_hint.setStyleSheet(f"color: {COLORS['accent']};")
+        self.roi_hint.setFont(ui_font(12))
+        self.roi_hint.setStyleSheet(f"color: {semantic_hex('orange')};")
         self.roi_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left_layout.addWidget(self.roi_hint)
         self.preview = PreviewWidget()
         self.preview.roi_changed.connect(self._on_roi_changed)
         left_layout.addWidget(self.preview, stretch=1)
-        body.addWidget(block_widget(left_col), stretch=3)
+        body.addWidget(card_widget(left_col), stretch=3)
 
         # 右：状态面板 + 控制
         side = QVBoxLayout()
-        side.setSpacing(1)
+        side.setSpacing(12)
         body.addLayout(side, stretch=1)
 
         self.state_banner = StateBanner("IDLE")
-        side.addWidget(block_widget(self.state_banner))
+        side.addWidget(self.state_banner)
 
-        # F11 环境异常横幅（持续监测结果；无异常时隐藏）
-        self.env_banner = QLabel("")
-        self.env_banner.setFont(mono_font(10, bold=True, letter_spacing=1.5))
-        self.env_banner.setWordWrap(True)
-        self.env_banner.setStyleSheet(f"color: {COLORS['accent']};")
-        self.env_banner.hide()
-        side.addWidget(block_widget(self.env_banner))
+        # F11 环境异常通知横幅（持续监测结果；无异常时隐藏）
+        self.env_banner = NotificationBanner()
+        side.addWidget(self.env_banner)
 
-        # 遥测计数区（高密度两列）
+        # 遥测计数区（两列卡片）
         metrics = QWidget()
         grid = QHBoxLayout(metrics)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(24)
         col1 = QVBoxLayout()
         col2 = QVBoxLayout()
+        col1.setSpacing(10)
+        col2.setSpacing(10)
         grid.addLayout(col1)
         grid.addLayout(col2)
         self.m_total = TelemetryValue("已采集", "0")
@@ -161,52 +158,53 @@ class CapturePage(QWidget):
         col2.addWidget(self.m_energy)
         self.energy_bar = MiniBar(maximum=40.0)
         col2.addWidget(self.energy_bar)
-        side.addWidget(block_widget(metrics))
+        side.addWidget(card_widget(metrics))
 
         # 控制区
         controls = QWidget()
         ctl = QVBoxLayout(controls)
         ctl.setContentsMargins(0, 0, 0, 0)
-        ctl.setSpacing(8)
-        ctl.addWidget(SectionHeader(">>> CONTROL"))
+        ctl.setSpacing(10)
+        ctl.addWidget(SectionHeader("采集控制"))
 
         self.btn_start = QPushButton("开始采集")
         self.btn_start.setObjectName("primary")
-        self.btn_start.setFont(mono_font(11, bold=True))
+        self.btn_start.setFont(ui_font(13, bold=True))
+        self.btn_start.setDefault(True)
         self.btn_start.clicked.connect(self._on_start_clicked)
         ctl.addWidget(self.btn_start)
 
         row = QHBoxLayout()
         row.setSpacing(24)  # L1：手动开始/结束拉开间距防误触
-        self.btn_manual_start = QPushButton("手动开始挥棒 [空格]")
-        self.btn_manual_stop = QPushButton("手动结束 [空格]")
+        self.btn_manual_start = QPushButton("手动开始挥棒")
+        self.btn_manual_start.setToolTip("快捷键：空格")
+        self.btn_manual_stop = QPushButton("手动结束")
+        self.btn_manual_stop.setToolTip("快捷键：空格")
         self.btn_manual_start.clicked.connect(lambda: self.controller.manual_start())
         self.btn_manual_stop.clicked.connect(lambda: self.controller.manual_stop())
         row.addWidget(self.btn_manual_start)
         row.addWidget(self.btn_manual_stop)
         ctl.addLayout(row)
 
-        ctl.addSpacing(12)  # L1：丢弃重拍与手动开始拉开距离防误触
-        self.btn_discard = QPushButton("丢弃重拍 [D]")
+        ctl.addSpacing(8)  # L1：丢弃重拍与手动开始拉开距离防误触
+        self.btn_discard = QPushButton("丢弃重拍")
+        self.btn_discard.setToolTip("快捷键：D")
         self.btn_discard.clicked.connect(lambda: self.controller.discard())
         ctl.addWidget(self.btn_discard)
 
-        self.btn_envcheck = QPushButton("[ ENV CHECK ] 环境体检")
-        self.btn_envcheck.setFont(mono_font(10, bold=True))
+        self.btn_envcheck = QPushButton("环境体检")
+        self.btn_envcheck.setToolTip("采集前 10 秒环境合规检查（光照/频闪/构图等 8 项）")
         self.btn_envcheck.clicked.connect(self._on_envcheck_clicked)
         ctl.addWidget(self.btn_envcheck)
 
         self.chk_mute = QCheckBox("静音")
-        self.chk_mute.setFont(mono_font(10))
         self.chk_mute.toggled.connect(self.controller_muted)
         ctl.addWidget(self.chk_mute)
 
         src_row = QHBoxLayout()
         src_label = QLabel("相机源")
         src_label.setObjectName("dim")
-        src_label.setFont(mono_font(9, letter_spacing=2.0))
         self.combo_source = QComboBox()
-        self.combo_source.setFont(mono_font(10))
         for i in range(3):
             self.combo_source.addItem(f"{_SOURCE_UVC_PREFIX}{i}")
         self.combo_source.addItem(_SOURCE_FILE)
@@ -218,9 +216,7 @@ class CapturePage(QWidget):
         view_row = QHBoxLayout()
         view_label = QLabel("视图")
         view_label.setObjectName("dim")
-        view_label.setFont(mono_font(9, letter_spacing=2.0))
         self.combo_view = QComboBox()
-        self.combo_view.setFont(mono_font(10))
         for name, _mode in _VIEW_MODES:
             self.combo_view.addItem(name)
         self.combo_view.currentIndexChanged.connect(self._on_view_changed)
@@ -228,13 +224,13 @@ class CapturePage(QWidget):
         view_row.addWidget(self.combo_view, stretch=1)
         ctl.addLayout(view_row)
         ctl.addStretch(1)
-        side.addWidget(block_widget(controls), stretch=1)
+        side.addWidget(card_widget(controls), stretch=1)
 
         # 状态栏消息
         self.status_line = QLabel("待命")
         self.status_line.setObjectName("dim")
-        self.status_line.setFont(mono_font(10, letter_spacing=1.5))
-        root.addWidget(block_widget(self.status_line))
+        self.status_line.setFont(ui_font(12))
+        root.addWidget(self.status_line)
 
     # ---- 控制器接线 ----
 
@@ -262,7 +258,7 @@ class CapturePage(QWidget):
     def _on_transition(self, transition) -> None:
         state: State = transition.next
         self.state_banner.set_state(state.value, alarm=state is State.ERROR)
-        self.status_line.setText(f">>> {transition.prev.value} → {state.value} ({transition.reason})")
+        self.status_line.setText(f"{transition.prev.value} → {state.value}（{transition.reason}）")
         self._refresh_counts()
         if state is State.READY:
             # H1：进入 READY 开始视觉倒计时（含 SAVING→READY 的循环重启）
@@ -313,12 +309,12 @@ class CapturePage(QWidget):
     def _on_error(self, message: str) -> None:
         """H5：异常横幅 + 状态栏分类文案（相机断开 / 存储失败 / 通用异常）。"""
         self.state_banner.set_state("ERROR", alarm=True)
-        self.status_line.setText(f">>> {error_prompt(message)}（{message}）")
+        self.status_line.setText(f"{error_prompt(message)}（{message}）")
 
     def _on_roi_changed(self, x: int, y: int, w: int, h: int) -> None:
         self.controller.update_roi((x, y, w, h))
         self._refresh_roi_hint()
-        self.status_line.setText(f">>> ROI 已保存 ({x},{y} {w}x{h})")
+        self.status_line.setText(f"ROI 已保存 ({x},{y} {w}x{h})")
 
     def _refresh_roi_hint(self) -> None:
         """M5：未框选 ROI 时常显引导提示，框选后隐藏。"""
@@ -332,7 +328,7 @@ class CapturePage(QWidget):
         if was_running:
             self.controller.stop()
             self.btn_start.setText("开始采集")
-            self.status_line.setText(">>> 环境检查中，采集已暂停")
+            self.status_line.setText("环境检查中，采集已暂停")
         try:
             if self._file_path:
                 source = FileSource(self._file_path)
@@ -344,7 +340,7 @@ class CapturePage(QWidget):
                     fps=s.capture_fps, pixel_format=s.pixel_format,
                 )
         except Exception as e:
-            self.status_line.setText(f">>> ERROR: {e}")
+            self.status_line.setText(f"错误：{e}")
             if was_running:
                 self._resume_capture()
             return
@@ -366,7 +362,7 @@ class CapturePage(QWidget):
             self.set_file_source(self._file_path)
         if self.controller.start():
             self.btn_start.setText("暂停")
-            self.status_line.setText(">>> 采集运行中")
+            self.status_line.setText("采集运行中")
 
     def _monitor_env(self) -> None:
         """持续监测（5s 定时）：采集中评估最近 ~1s 亮度/频闪，异常时横幅提示。"""
@@ -374,8 +370,8 @@ class CapturePage(QWidget):
             return
         problems = self.controller.evaluate_environment()
         if problems:
-            text = ">>> ENV " + " ｜ ".join(
-                f"{r.name}: {r.measured}（{r.suggestion}）" if r.suggestion else f"{r.name}: {r.measured}"
+            text = "环境提醒：" + "；".join(
+                f"{r.name} {r.measured}（{r.suggestion}）" if r.suggestion else f"{r.name} {r.measured}"
                 for r in problems
             )
             self.env_banner.setText(text)
@@ -389,15 +385,15 @@ class CapturePage(QWidget):
         if not self.controller.running:
             if self.controller.start():
                 self.btn_start.setText("暂停")
-                self.status_line.setText(">>> 采集运行中")
+                self.status_line.setText("采集运行中")
         elif self.controller.paused:
             self.controller.resume()
             self.btn_start.setText("暂停")
-            self.status_line.setText(">>> 采集继续")
+            self.status_line.setText("采集继续")
         else:
             self.controller.pause()
             self.btn_start.setText("继续")
-            self.status_line.setText(">>> 采集已暂停（预览保持）")
+            self.status_line.setText("采集已暂停（预览保持）")
 
     def _on_source_changed(self, index: int) -> None:
         text = self.combo_source.currentText()
@@ -422,7 +418,7 @@ class CapturePage(QWidget):
             self.settings, self.store, source=FileSource(path, loop=True)
         )
         self.attach_controller(self.controller)
-        self.status_line.setText(f">>> 文件回放: {Path(path).name}")
+        self.status_line.setText(f"文件回放：{Path(path).name}")
         if was_running:
             self.controller.start()
 

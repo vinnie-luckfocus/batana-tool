@@ -25,7 +25,7 @@ from app.ui.controller import CaptureController
 from app.ui.main_window import MainWindow
 from app.ui.review_page import ReviewPage
 from app.ui.settings import AppSettings
-from app.ui.theme import COLORS
+from app.ui.theme import semantic_hex
 from app.ui.widgets import STATE_LABELS, MiniBar, StateBanner
 from app.voice import PROMPT_ERROR_CAMERA, PROMPT_ERROR_STORAGE, PROMPT_NO_SWING, NullVoice
 
@@ -83,16 +83,19 @@ def test_state_banner_chinese_labels(qapp):
 
 
 def test_state_banner_colors(qapp):
+    """状态 pill 语义色：绿=就绪、蓝=进行中、红=异常/挥棒提示、灰=空闲。"""
     banner = StateBanner()
-    banner.set_state("ARMED")
-    assert COLORS["accent"] in banner.styleSheet()  # ARMED 强调红
+    banner.set_state("READY")
+    assert semantic_hex("green") in banner.styleSheet()   # 请准备=就绪绿
     banner.set_state("SWING")
-    assert f"background-color: {COLORS['accent']}" in banner.styleSheet()  # 录制中红底
+    assert semantic_hex("blue") in banner.styleSheet()    # 录制中=进行中蓝
+    banner.set_state("ARMED")
+    assert semantic_hex("red") in banner.styleSheet()     # 请挥棒=红
     banner.set_state("IDLE")
-    assert COLORS["fg_dim"] in banner.styleSheet()
+    assert semantic_hex("fg_dim") in banner.styleSheet()  # 空闲灰
     banner.set_state("ERROR", alarm=True)
     assert banner.text() == "异常"
-    assert COLORS["accent"] in banner.styleSheet()
+    assert semantic_hex("red") in banner.styleSheet()
 
 
 def test_state_banner_countdown(qapp):

@@ -34,8 +34,8 @@ from app.session import (
 from app.session.export import resolve_core_repo, validate_with_core
 from app.ui.player import ClipPlayer, PlayerWidget
 from app.ui.settings import AppSettings
-from app.ui.theme import mono_font
-from app.ui.widgets import SectionHeader, TelemetryValue, block_widget
+from app.ui.theme import mono_font, ui_font
+from app.ui.widgets import SectionHeader, TelemetryValue, card_widget
 
 _FILTER_ALL = "全部"
 _FILTERS = [_FILTER_ALL, STATUS_PASS, STATUS_FAIL, STATUS_REVIEW]
@@ -164,32 +164,36 @@ class ReviewPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(1, 1, 1, 1)
-        root.setSpacing(1)
-
-        top = block_widget(SectionHeader("[ REVIEW ]"))
-        top.layout().setContentsMargins(10, 6, 10, 6)
-        root.addWidget(top)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(12)
 
         body = QHBoxLayout()
-        body.setSpacing(1)
+        body.setSpacing(12)
         root.addLayout(body, stretch=1)
 
         # 左：筛选 + 素材列表 + 批量导出
         left = QWidget()
+        left.setMinimumWidth(320)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
-        left_layout.addWidget(SectionHeader(">>> CLIPS"))
+        left_layout.setSpacing(10)
+        left_layout.addWidget(SectionHeader("素材"))
         self.combo_filter = QComboBox()
-        self.combo_filter.setFont(mono_font(10))
         self.combo_filter.addItems(_FILTERS)
         self.combo_filter.currentTextChanged.connect(lambda _t: self.refresh_list())
         left_layout.addWidget(self.combo_filter)
         self.list_clips = QListWidget()
-        self.list_clips.setFont(mono_font(10))
         self.list_clips.currentItemChanged.connect(self._on_item_selected)
         left_layout.addWidget(self.list_clips, stretch=1)
+        # 空状态引导视图：无素材时覆盖在列表上（不遮挡空表的系统渲染，仅提示下一步）
+        self.list_empty_hint = QLabel(
+            "暂无素材\n\n先到「采集」页录制挥棒片段，\n保存后会出现在这里。",
+            self.list_clips.viewport(),
+        )
+        self.list_empty_hint.setObjectName("dim")
+        self.list_empty_hint.setFont(ui_font(13))
+        self.list_empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.list_empty_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.btn_export = QPushButton("批量导出（合格素材）")
         self.btn_export.setObjectName("primary")
         self.btn_export.clicked.connect(self.export_passed)
@@ -197,16 +201,16 @@ class ReviewPage(QWidget):
         self.btn_delete = QPushButton("删除选中素材")
         self.btn_delete.clicked.connect(self.delete_current)
         left_layout.addWidget(self.btn_delete)
-        body.addWidget(block_widget(left), stretch=1)
+        body.addWidget(card_widget(left), stretch=1)
 
         # 右：回放 + 操作
         right = QVBoxLayout()
-        right.setSpacing(1)
+        right.setSpacing(12)
         body.addLayout(right, stretch=3)
 
         self.player = PlayerWidget()
         self.player.keypoint_moved.connect(self.correct_keypoint)
-        right.addWidget(block_widget(self.player), stretch=1)
+        right.addWidget(card_widget(self.player), stretch=1)
 
         # 走带控制
         transport = QWidget()
@@ -221,18 +225,16 @@ class ReviewPage(QWidget):
         self.btn_next.clicked.connect(lambda: self.step(1))
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.valueChanged.connect(self._on_slider)
-        self.label_frame = QLabel("FRAME --/--")
-        self.label_frame.setFont(mono_font(10, letter_spacing=1.5))
+        self.label_frame = QLabel("帧 --/--")
+        self.label_frame.setFont(mono_font(12))
         self.btn_trigger = QPushButton("跳到触发帧")
         self.btn_trigger.clicked.connect(self.jump_to_trigger)
         self.combo_speed = QComboBox()
-        self.combo_speed.setFont(mono_font(10))
         for name, _v in _SPEED_OPTIONS:
             self.combo_speed.addItem(name)
         self.combo_speed.setCurrentIndex(2)  # 默认 1×
         self.combo_speed.currentIndexChanged.connect(self._on_speed_changed)
         self.combo_eye = QComboBox()
-        self.combo_eye.setFont(mono_font(10))
         self.combo_eye.addItems(["左目", "右目"])
         self.combo_eye.currentIndexChanged.connect(lambda _i: self._on_view_eye_changed())
         tp.addWidget(self.btn_play)
@@ -243,16 +245,17 @@ class ReviewPage(QWidget):
         tp.addWidget(self.btn_trigger)
         tp.addWidget(self.combo_speed)
         tp.addWidget(self.combo_eye)
-        right.addWidget(block_widget(transport))
+        right.addWidget(card_widget(transport))
 
         # 操作区：修剪 / 骨架 / 标记
         ops = QWidget()
         ops_layout = QHBoxLayout(ops)
         ops_layout.setContentsMargins(0, 0, 0, 0)
-        ops_layout.setSpacing(16)
+        ops_layout.setSpacing(24)
 
         trim_box = QVBoxLayout()
-        trim_box.addWidget(SectionHeader(">>> TRIM"))
+        trim_box.setSpacing(8)
+        trim_box.addWidget(SectionHeader("修剪"))
         trim_row = QHBoxLayout()
         self.btn_trim_start = QPushButton("设为起点")
         self.btn_trim_end = QPushButton("设为终点")
@@ -262,21 +265,21 @@ class ReviewPage(QWidget):
         trim_row.addWidget(self.btn_trim_end)
         trim_box.addLayout(trim_row)
         self.label_trim = QLabel("[--, --]")
-        self.label_trim.setFont(mono_font(10, letter_spacing=1.5))
+        self.label_trim.setFont(mono_font(12))
         trim_box.addWidget(self.label_trim)
         self.btn_trim_save = QPushButton("保存修剪")
         self.btn_trim_save.clicked.connect(self.save_trim)
         trim_box.addWidget(self.btn_trim_save)
+        trim_box.addStretch(1)
         ops_layout.addLayout(trim_box)
 
         pose_box = QVBoxLayout()
-        pose_box.addWidget(SectionHeader(">>> POSE"))
+        pose_box.setSpacing(8)
+        pose_box.addWidget(SectionHeader("骨架"))
         pose_eye_row = QHBoxLayout()
         pose_eye_label = QLabel("目")
         pose_eye_label.setObjectName("dim")
-        pose_eye_label.setFont(mono_font(9, letter_spacing=2.0))
         self.combo_pose_eye = QComboBox()
-        self.combo_pose_eye.setFont(mono_font(10))
         for name, _eyes in _POSE_EYE_OPTIONS:
             self.combo_pose_eye.addItem(name)
         pose_eye_row.addWidget(pose_eye_label)
@@ -296,7 +299,6 @@ class ReviewPage(QWidget):
         pose_row2 = QHBoxLayout()
         self.chk_pose = QCheckBox("骨架叠加")
         self.chk_pose.setChecked(True)
-        self.chk_pose.setFont(mono_font(10))
         self.chk_pose.toggled.connect(self.player.set_pose_visible)
         self.btn_save_pose = QPushButton("保存骨架")
         self.btn_save_pose.clicked.connect(self.save_pose)
@@ -305,10 +307,12 @@ class ReviewPage(QWidget):
         pose_box.addLayout(pose_row2)
         self.label_pose = TelemetryValue("骨架", "未跑")
         pose_box.addWidget(self.label_pose)
+        pose_box.addStretch(1)
         ops_layout.addLayout(pose_box)
 
         mark_box = QVBoxLayout()
-        mark_box.addWidget(SectionHeader(">>> MARK"))
+        mark_box.setSpacing(8)
+        mark_box.addWidget(SectionHeader("标记"))
         self.btn_pass = QPushButton("合格")
         self.btn_fail = QPushButton("不合格")
         self.btn_review = QPushButton("待复核")
@@ -317,14 +321,15 @@ class ReviewPage(QWidget):
         self.btn_review.clicked.connect(lambda: self.mark(STATUS_REVIEW))
         for b in (self.btn_pass, self.btn_fail, self.btn_review):
             mark_box.addWidget(b)
+        mark_box.addStretch(1)
         ops_layout.addLayout(mark_box)
         ops_layout.addStretch(1)
-        right.addWidget(block_widget(ops))
+        right.addWidget(card_widget(ops))
 
         self.status_line = QLabel("选择左侧素材开始审核")
         self.status_line.setObjectName("dim")
-        self.status_line.setFont(mono_font(10, letter_spacing=1.5))
-        root.addWidget(block_widget(self.status_line))
+        self.status_line.setFont(ui_font(12))
+        root.addWidget(self.status_line)
 
         # 快捷键：←/→ 逐帧，Shift+←/→ ±10 帧，空格 播放/暂停，Ctrl+Z 撤销修正
         QShortcut(QKeySequence(Qt.Key.Key_Left), self, activated=lambda: self.step(-1))
@@ -357,6 +362,19 @@ class ReviewPage(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, r["session_id"])
             item.setData(_ROLE_STATUS, r["status"])
             self.list_clips.addItem(item)
+        self._update_empty_hint()
+
+    def _update_empty_hint(self) -> None:
+        """空状态引导：列表为空时显示说明，否则隐藏。"""
+        self.list_empty_hint.setVisible(self.list_clips.count() == 0)
+        hint = self.list_empty_hint
+        hint.setGeometry(self.list_clips.viewport().rect())
+        hint.raise_()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if hasattr(self, "list_empty_hint"):
+            self._update_empty_hint()
 
     def _on_item_selected(self, item: QListWidgetItem | None, _prev=None) -> None:
         if item is not None:
@@ -389,7 +407,7 @@ class ReviewPage(QWidget):
         self._frame_pos = trim["start_frame"]
         self.slider.setValue(self._frame_pos)
         self._show_frame()
-        self.status_line.setText(f">>> SESSION {record['seq']:03d} 已加载")
+        self.status_line.setText(f"第 {record['seq']:03d} 段已加载")
         return True
 
     def _load_pose_for_eye(self, eye: str) -> None:
@@ -463,7 +481,7 @@ class ReviewPage(QWidget):
             return
         trigger = self._record.get("trigger_idx")
         if trigger is None:
-            self.status_line.setText(">>> 本段无触发帧记录（手动片段）")
+            self.status_line.setText("本段无触发帧记录（手动片段）")
             return
         self._frame_pos = min(max(int(trigger), 0), self._record["frame_count"] - 1)
         self.slider.blockSignals(True)
@@ -487,7 +505,7 @@ class ReviewPage(QWidget):
             pose = self._pose_frames[self._frame_pos]
         self.player.set_frame_data(gray, pose)
         total = self._record["frame_count"]
-        self.label_frame.setText(f"FRAME {self._frame_pos:04d}/{total - 1:04d}")
+        self.label_frame.setText(f"帧 {self._frame_pos:04d}/{total - 1:04d}")
 
     def step(self, delta: int) -> None:
         if self._record is None:
@@ -593,7 +611,7 @@ class ReviewPage(QWidget):
 
     def _on_pose_failed(self, message: str) -> None:
         self.label_pose.set_value("失败")
-        self.status_line.setText(f">>> 骨架推理失败: {message}")
+        self.status_line.setText(f"骨架推理失败：{message}")
 
     def _on_pose_worker_finished(self) -> None:
         self._pose_worker = None
@@ -665,7 +683,7 @@ class ReviewPage(QWidget):
         self._pose_model, self._pose_fps = model, fps
         self._pose_dirty = False
         self.label_pose.set_value(f"已保存 {'+'.join(frames_by_eye)}")
-        self.status_line.setText(">>> pose2d 骨架已保存")
+        self.status_line.setText("pose2d 骨架已保存")
         self.refresh_list()
         self._restore_list_selection()
         return True
@@ -693,7 +711,7 @@ class ReviewPage(QWidget):
         )
         self._trim_dirty = False
         self.status_line.setText(
-            f">>> 修剪已保存 [{trim['start_frame']}, {trim['end_frame']}]"
+            f"修剪已保存 [{trim['start_frame']}, {trim['end_frame']}]"
         )
         return True
 
@@ -704,7 +722,7 @@ class ReviewPage(QWidget):
             return
         self.store.mark(self._record["session_id"], status)
         self._record["status"] = status
-        self.status_line.setText(f">>> 已标记: {status}")
+        self.status_line.setText(f"已标记：{status}")
         self.refresh_list()
         # H2：标记后自动选中列表中下一条待复核
         self._select_next_pending()
@@ -718,7 +736,7 @@ class ReviewPage(QWidget):
                 return True
         self.list_clips.clearSelection()
         self.list_clips.setCurrentItem(None)
-        self.status_line.setText(">>> 列表中已无待复核素材")
+        self.status_line.setText("列表中已无待复核素材")
         return False
 
     # ---- 删除（H4） ----
@@ -748,7 +766,7 @@ class ReviewPage(QWidget):
         self.store.delete(sid)
         self.refresh_list()
         self._select_next_pending()
-        self.status_line.setText(f">>> 已删除素材 {sid}")
+        self.status_line.setText(f"已删除素材 {sid}")
         return True
 
     # ---- 批量导出（PRD F10） ----
@@ -766,7 +784,7 @@ class ReviewPage(QWidget):
             return []
         records = self.store.list(STATUS_PASS)
         if not records:
-            self.status_line.setText(">>> 无合格素材可导出")
+            self.status_line.setText("无合格素材可导出")
             QMessageBox.information(self, "批量导出", "没有标记为「合格」的素材。")
             return []
         # M4 磁盘预检：估算不足则弹窗中止
@@ -779,16 +797,16 @@ class ReviewPage(QWidget):
                 f"存储盘剩余 {free / 1e9:.1f} GB。\n"
                 "请清理磁盘或更换存储根目录后重试，已中止导出。",
             )
-            self.status_line.setText(">>> 导出中止：磁盘空间不足")
+            self.status_line.setText("导出中止：磁盘空间不足")
             return []
         out_root = self.store.root / "exports"
         self._export_worker = _ExportWorker(self, records, out_root)
         self._export_worker.progressed.connect(
-            lambda done, total: self.status_line.setText(f">>> 导出中 {done}/{total} …")
+            lambda done, total: self.status_line.setText(f"导出中 {done}/{total}…")
         )
         self._export_worker.finished_all.connect(self._on_export_done)
         self.btn_export.setEnabled(False)
-        self.status_line.setText(f">>> 导出中 0/{len(records)} …")
+        self.status_line.setText(f"导出中 0/{len(records)}…")
         self._export_worker.start()
         return []
 
@@ -813,7 +831,7 @@ class ReviewPage(QWidget):
         if errors:
             lines += ["", "失败:"] + errors
         QMessageBox.information(self, "批量导出", "\n".join(lines))
-        self.status_line.setText(f">>> 导出完成 {len(exported)} 段 → {out_root}")
+        self.status_line.setText(f"导出完成 {len(exported)} 段 → {out_root}")
 
     def _export_one(self, record: dict, out_root: Path) -> Path:
         """单段导出：按修剪区间读回帧序列，附骨架（若有）。"""

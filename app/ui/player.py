@@ -1,7 +1,7 @@
 """审核回放器：素材帧读取（ClipPlayer）+ 骨架叠加显示与拖动修正（PlayerWidget）。
 
-骨架置信度着色（数据可视化叠加层，绘制在素材画面上，属预览原貌的一部分，
-不受"终端绿仅限相机指示"约束）：高 ≥0.7 绿 / 中 0.4–0.7 黄 / 低 <0.4 红。
+骨架置信度着色（数据可视化叠加层，绘制在素材画面上，属预览原貌的一部分）：
+高 ≥0.7 系统绿 / 中 0.4–0.7 系统黄 / 低 <0.4 系统红（柔和语义色）。
 手动修正关键点显示为方框标记（对应契约 manual 字段）。
 """
 
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QWidget
 
 from app.pose import KEYPOINT_NAMES, PoseFrame, read_pose2d
 from app.ui.preview import FrameView, gray_to_qimage
-from app.ui.theme import COLORS
+from app.ui.theme import semantic_color
 
 # BlazePose 33 点连线（MediaPipe POSE_CONNECTIONS，索引对齐 KEYPOINT_NAMES）
 POSE_CONNECTIONS = [
@@ -30,17 +30,14 @@ POSE_CONNECTIONS = [
     (27, 29), (28, 30), (29, 31), (30, 31), (27, 31), (28, 32),
 ]
 
-CONF_HIGH = QColor("#4AF626")   # 高置信度
-CONF_MID = QColor("#E6C619")    # 中置信度
-CONF_LOW = QColor("#E61919")    # 低置信度（与强调色一致）
-
 
 def confidence_color(visibility: float) -> QColor:
+    """置信度着色：高=系统绿 / 中=系统黄 / 低=系统红（随当前外观取色）。"""
     if visibility >= 0.7:
-        return CONF_HIGH
+        return semantic_color("green")
     if visibility >= 0.4:
-        return CONF_MID
-    return CONF_LOW
+        return semantic_color("yellow")
+    return semantic_color("red")
 
 
 class ClipPlayer:
@@ -202,9 +199,9 @@ class PlayerWidget(FrameView):
         # 拖拽中的点高亮圈
         if self._drag_kp is not None and self._drag_pos is not None:
             p = point_of(self._drag_kp)
-            painter.setPen(QPen(QColor(COLORS["fg"]), 1, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(QColor(255, 255, 255), 1.5, Qt.PenStyle.DashLine))
             painter.drawEllipse(p, 8, 8)
             painter.drawText(
                 p + QPointF(10, -10),
-                f"{KEYPOINT_NAMES[self._drag_kp].upper()}",
+                f"{KEYPOINT_NAMES[self._drag_kp]}",
             )
