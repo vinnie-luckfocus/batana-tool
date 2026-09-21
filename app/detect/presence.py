@@ -21,8 +21,11 @@ class PresenceDetector:
     就位后前景消失持续 absent_seconds 判定离场。每帧调用 update()。
 
     学习率策略（MOG2）：
-    - 常态慢学习（learning_rate，默认 0.002）：MOG2 方差快速膨胀会把静止人形
-      几帧内吸进背景，慢学习让就位静止的人长时间保持前景；
+    - 就位后冻结（learning_rate=0）：**人是来挥棒的，就位后必然长时间静止**；
+      MOG2 持续学习会把静止人形约 1/lr 帧内吸进背景（默认参数 75fps 下仅 ~7 秒），
+      导致误报「人员离开」。冻结后静止人员永远保持前景；
+    - 常态慢学习（learning_rate，默认 0.002）：人员走入画面到判定就位的
+      短暂窗口内使用，避免把人形学成背景；
     - 空场景快学习（idle_learning_rate，默认 0.05）：上一帧占比低于阈值才启用，
       人离开后快速把空场景学进背景，避免旧人形残留干扰下次就位。
     """
@@ -69,7 +72,12 @@ class PresenceDetector:
         roi_frame = crop_roi(frame_gray, self.roi)
         if self.method == "mog2":
             assert self._bg is not None
-            lr = self.idle_learning_rate if (self._scene_empty and not self._present) else self.learning_rate
+            if self._present:
+                lr = 0.0  # 就位后冻结背景模型：静止人员不被吸进背景
+            elif self._scene_empty:
+                lr = self.idle_learning_rate
+            else:
+                lr = self.learning_rate
             fg = self._bg.apply(roi_frame, learningRate=lr)
             mask = fg == 255
         else:

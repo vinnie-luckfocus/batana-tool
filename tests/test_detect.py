@@ -69,6 +69,26 @@ def test_presence_ratio_boundary():
     assert det2.present is True
 
 
+def test_presence_static_person_never_absorbed():
+    """回归：人就位后长时间静止（远超 MOG2 吸收周期）不得误判离场。"""
+    det = PresenceDetector(ROI, FPS, ratio_thresh=0.05, stable_seconds=0.3, absent_seconds=0.5)
+    learn_background(det)
+    occupied = frame_with_block(40, 40, 50, 100)
+    for _ in range(5):
+        det.update(occupied)
+    assert det.present
+    # 静止 1500 帧（旧实现 lr=0.002 下 ~500 帧即被吸进背景误判离开）
+    for _ in range(1500):
+        assert det.update(occupied), "静止人员被背景模型吸收"
+    assert det.last_ratio == pytest.approx(0.5, abs=0.02)
+    # 人离开 → 正常判离场，且空场景快速重学
+    for _ in range(6):  # absent_frames = 5
+        det.update(empty_frame())
+    assert not det.present
+    learn_background(det, frames=30)
+    assert det.last_ratio < 0.05
+
+
 def test_presence_leaves_after_absent_timeout():
     det = PresenceDetector(ROI, FPS, ratio_thresh=0.05, stable_seconds=0.3, absent_seconds=0.5)
     learn_background(det)
