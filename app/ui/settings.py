@@ -34,8 +34,10 @@ class AppSettings:
     capture_backend: str = "auto"  # auto / ffmpeg / opencv；macOS 下 auto 优先 ffmpeg
     # F3/F5 检测阈值
     presence_ratio: float = 0.02
-    energy_trigger: float = 15.0
-    energy_release: float = 8.0
+    # 挥棒判据 = 显著运动像素占比（帧差 > pix_thresh 的像素占 ROI 比例），百分数
+    motion_trigger_pct: float = 2.0
+    motion_release_pct: float = 0.8
+    motion_pix_thresh: float = 25.0
     pre_roll_seconds: float = 1.0
     post_roll_seconds: float = 1.0
     countdown_seconds: float = 3.0

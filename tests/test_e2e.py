@@ -35,7 +35,7 @@ def run_pipeline(video: Path, out_root: Path) -> tuple[CaptureStateMachine, list
         learning_rate=0.002,
     )
     swing = SwingDetector(
-        ROI, FPS, trigger_thresh=2.5, release_thresh=1.2,
+        ROI, FPS, trigger_ratio=0.02, release_ratio=0.008,
         pre_roll_seconds=1.0, post_roll_seconds=0.8,
     )
     buffer = RingBuffer(3.0, FPS)

@@ -37,6 +37,7 @@ class FakeSwing:
         self.end_at = end_at
         self.active = False
         self.trigger_idx = -1
+        self.last_ratio = 0.0
         self.last_energy = 0.0
 
     def update(self, frame: np.ndarray, frame_idx: int) -> str | None:

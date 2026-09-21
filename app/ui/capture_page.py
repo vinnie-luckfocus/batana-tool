@@ -102,7 +102,7 @@ class CapturePage(QWidget):
         self.preview.set_roi(settings.roi_tuple())
         self._refresh_counts()
         self._refresh_roi_hint()
-        self.energy_bar.set_threshold(settings.energy_trigger)
+        self.energy_bar.set_threshold(settings.motion_trigger_pct)
         # H1 视觉倒计时：跟随 READY 态起始时间在横幅上倒数（不改核心层语义）
         self._ready_since: float | None = None
         self._countdown_timer = QTimer(self)
@@ -181,14 +181,14 @@ class CapturePage(QWidget):
         self.m_review = TelemetryValue("待审核", "0")
         self.m_fps = TelemetryValue("帧率", "--")
         self.m_ratio = TelemetryValue("就位占比", "--")
-        self.m_energy = TelemetryValue("运动能量", "--", accent=True)
+        self.m_energy = TelemetryValue("运动占比", "--", accent=True)
         grid.addWidget(self.m_total, 0, 0)
         grid.addWidget(self.m_pass, 0, 1)
         grid.addWidget(self.m_fps, 1, 0)
         grid.addWidget(self.m_review, 1, 1)
         grid.addWidget(self.m_ratio, 2, 0)
         grid.addWidget(self.m_energy, 2, 1)
-        self.energy_bar = MiniBar(maximum=40.0)
+        self.energy_bar = MiniBar(maximum=10.0)  # 运动占比百分数，满格 10%
         grid.addWidget(self.energy_bar, 3, 0, 1, 2)  # 拉满两列
         side.addWidget(card_widget(metrics, shadow=True))
 
@@ -329,11 +329,11 @@ class CapturePage(QWidget):
         """L1 D 键：丢弃重拍当前进行中片段。"""
         self.controller.discard()
 
-    def _on_telemetry(self, fps: float, ratio: float, energy: float) -> None:
+    def _on_telemetry(self, fps: float, ratio: float, motion_pct: float) -> None:
         self.m_fps.set_value(f"{fps:5.1f}")
         self.m_ratio.set_value(f"{ratio * 100:4.1f}%")
-        self.m_energy.set_value(f"{energy:5.2f}")
-        self.energy_bar.set_value(energy)
+        self.m_energy.set_value(f"{motion_pct:4.2f}%")
+        self.energy_bar.set_value(motion_pct)
 
     def _on_error(self, message: str) -> None:
         """H5：异常横幅 + 状态栏分类文案（相机断开 / 存储失败 / 通用异常）。"""

@@ -121,33 +121,34 @@ def test_presence_invalid_method():
 # ---- SwingDetector ----
 
 
-def energy_frame(prev: np.ndarray, pixels: int, offset: int = 0) -> np.ndarray:
-    """在 prev 基础上把 ROI 内 [offset, offset+pixels) 像素置 255，控制帧差能量。
+def energy_frame(prev: np.ndarray, pixels: int, offset: int = 0, value: int = 255) -> np.ndarray:
+    """在 prev 基础上把 ROI 内 [offset, offset+pixels) 像素置 value，控制运动占比。
 
-    ROI 100x100：相邻帧不同区域点亮时，mean absdiff ≈ pixels * 255 / 10000。
+    ROI 100x100 = 10000 像素：pixels 个像素帧差 255 → 运动占比 = pixels/10000。
     """
     f = prev.copy()
     sub = f[40:140, 40:140]
-    sub.flat[offset : offset + pixels] = 255  # flat 赋值写回视图（ravel() 会拷贝，不能用）
+    sub.flat[offset : offset + pixels] = value  # flat 赋值写回视图（ravel() 会拷贝，不能用）
     return f
 
 
 def test_swing_trigger_and_end():
-    det = SwingDetector(ROI, FPS, trigger_thresh=15.0, release_thresh=8.0,
+    det = SwingDetector(ROI, FPS, trigger_ratio=0.05, release_ratio=0.03,
                         pre_roll_seconds=1.0, post_roll_seconds=0.5)
     base = empty_frame()
     assert det.update(base, 0) is None  # 首帧无帧差
     assert det.update(base.copy(), 1) is None  # 静止
-    # 能量 = 784*255/10000 ≈ 20 > 15 → 触发
+    # 占比 = 784/10000 ≈ 7.8% > 5% → 触发
     burst = energy_frame(base, 784)
     assert det.update(burst, 2) == "started"
     assert det.active is True
     assert det.trigger_idx == 2
-    # 持续高能量（每帧画面都在变）：不结束（post_roll=5 帧）
-    assert det.update(energy_frame(base, 392), 3) is None              # ≈10 > 8
+    assert det.last_ratio == pytest.approx(0.0784, abs=0.001)
+    # 持续运动（每帧画面都在变）：不结束（post_roll=5 帧）
+    assert det.update(energy_frame(base, 392), 3) is None              # 392px ≈ 3.9% > 3%
     assert det.update(energy_frame(base, 784, offset=392), 4) is None  # 另一区域点亮
     assert det.update(energy_frame(base, 392), 5) is None
-    # 画面静止不变：能量 0 < 8，持续 5 帧 → 第 5 帧结束
+    # 画面静止不变：占比 0 < 3%，持续 5 帧 → 第 5 帧结束
     still = energy_frame(base, 392)
     for i in range(4):
         assert det.update(still.copy(), 6 + i) is None
@@ -156,46 +157,60 @@ def test_swing_trigger_and_end():
 
 
 def test_swing_no_false_trigger_on_small_noise():
-    det = SwingDetector(ROI, FPS, trigger_thresh=15.0, release_thresh=8.0)
+    det = SwingDetector(ROI, FPS)  # 默认 trigger 2%
     base = empty_frame()
     det.update(base, 0)
     prev = base
     for i in range(1, 20):
-        # 能量 = 100*255/10000 ≈ 2.55 < 15：小幅扰动不触发
-        cur = energy_frame(prev, 100)
+        # 交替点亮两个 50px 区域：每帧 100px 变化 = 1% < 2%，小幅扰动不触发
+        cur = energy_frame(prev, 50, offset=50 * (i % 2))
+        assert det.update(cur, i) is None
+        prev = cur
+    assert det.active is False
+
+
+def test_swing_ignores_subthreshold_pixel_noise():
+    """底噪免疫：大面积但低对比度变化（帧差 < pix_thresh）不触发。"""
+    det = SwingDetector(ROI, FPS, pix_thresh=25.0, trigger_ratio=0.02)
+    base = empty_frame()
+    det.update(base, 0)
+    prev = base
+    for i in range(1, 20):
+        # 50% 画面帧差仅 20（< 25）：占比判据为 0，不触发
+        cur = energy_frame(prev, 5000, value=20)
         assert det.update(cur, i) is None
         prev = cur
     assert det.active is False
 
 
 def test_swing_energy_threshold_boundary():
-    det = SwingDetector(ROI, FPS, trigger_thresh=10.0, release_thresh=1.0)
+    det = SwingDetector(ROI, FPS, trigger_ratio=0.04, release_ratio=0.01)
     base = empty_frame()
     det.update(base, 0)
-    # 恰低于阈值：392*255/10000 ≈ 10.0 → 用 380 像素 ≈ 9.69 < 10 不触发
+    # 恰低于阈值：380px = 3.8% < 4% 不触发
     just_below = energy_frame(base, 380)
     assert det.update(just_below, 1) is None
     assert det.active is False
-    # 高于阈值：470 像素 ≈ 11.99 > 10 触发
-    det2 = SwingDetector(ROI, FPS, trigger_thresh=10.0, release_thresh=1.0)
+    # 高于阈值：470px = 4.7% > 4% 触发
+    det2 = SwingDetector(ROI, FPS, trigger_ratio=0.04, release_ratio=0.01)
     det2.update(base, 0)
     above = energy_frame(base, 470)
     assert det2.update(above, 1) == "started"
 
 
 def test_swing_quiet_counter_resets_on_energy():
-    det = SwingDetector(ROI, FPS, trigger_thresh=10.0, release_thresh=5.0, post_roll_seconds=0.3)
+    det = SwingDetector(ROI, FPS, trigger_ratio=0.02, release_ratio=0.015, post_roll_seconds=0.3)
     base = empty_frame()
     det.update(base, 0)
-    burst = energy_frame(base, 784)  # ≈20
+    burst = energy_frame(base, 784)  # 7.8%
     assert det.update(burst, 1) == "started"
     quiet = empty_frame()
-    # 安静 2 帧后又来一波能量 → quiet 计数清零，不结束
+    # 安静 2 帧后又来一波运动 → quiet 计数清零，不结束
     det.update(quiet, 2)
     det.update(quiet, 3)
     burst2 = energy_frame(quiet, 470)
-    assert det.update(burst2, 4) is None  # ≈12 > 5，quiet 清零
-    # 之后保持 burst2 画面不变（能量 0 < 5），3 帧安静后结束
+    assert det.update(burst2, 4) is None  # 4.7% > 1.5%，quiet 清零
+    # 之后保持 burst2 画面不变（占比 0 < 1.5%），3 帧安静后结束
     for i in range(2):
         assert det.update(burst2.copy(), 5 + i) is None
     assert det.update(burst2.copy(), 7) == "ended"  # post_roll = 3 帧

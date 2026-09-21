@@ -175,7 +175,7 @@ class CaptureController(QObject):
     preview_ready = Signal(object)
     # 状态机迁移（listener 桥接）
     transitioned = Signal(object)
-    # (实测帧率, 就位占比, 运动能量)
+    # (实测帧率, 就位占比, 运动占比%)
     telemetry = Signal(float, float, float)
     # SessionStore 新登记记录（dict）
     clip_saved = Signal(object)
@@ -250,8 +250,9 @@ class CaptureController(QObject):
         presence = presence or PresenceDetector(roi, fps, ratio_thresh=s.presence_ratio)
         swing = swing or SwingDetector(
             roi, fps,
-            trigger_thresh=s.energy_trigger,
-            release_thresh=s.energy_release,
+            pix_thresh=s.motion_pix_thresh,
+            trigger_ratio=s.motion_trigger_pct / 100.0,
+            release_ratio=s.motion_release_pct / 100.0,
             pre_roll_seconds=s.pre_roll_seconds,
             post_roll_seconds=s.post_roll_seconds,
         )
@@ -308,7 +309,7 @@ class CaptureController(QObject):
             self.telemetry.emit(
                 self._measured_fps,
                 self._presence.last_ratio if self._presence else 0.0,
-                self._swing.last_energy if self._swing else 0.0,
+                (self._swing.last_ratio * 100.0) if self._swing else 0.0,
             )
 
     # ---- F11 持续环境监测（亮度/频闪，轻量） ----

@@ -191,7 +191,7 @@ class StateBanner(_RestyleGuard, QLabel):
 
 
 class MiniBar(QWidget):
-    """细圆角进度条（运动能量等）：强调色填充 + 阈值刻度竖线。"""
+    """细圆角进度条（运动占比等）：强调色填充 + 阈值刻度竖线。"""
 
     def __init__(self, maximum: float = 40.0, threshold: float | None = None) -> None:
         super().__init__()

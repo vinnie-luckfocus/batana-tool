@@ -297,8 +297,8 @@ def test_gui_source_demo_boots_offscreen(qapp, settings, synth_video, tmp_path):
     settings.capture_fps = 30.0
     settings.countdown_seconds = 0.5
     settings.presence_ratio = 0.02
-    settings.energy_trigger = 2.5
-    settings.energy_release = 1.2
+    settings.motion_trigger_pct = 2.0
+    settings.motion_release_pct = 0.8
     settings.pre_roll_seconds = 1.0
     settings.post_roll_seconds = 0.8
     settings.save()
