@@ -24,12 +24,14 @@ class AppSettings:
 
     # F2 打击区 ROI（左目像素坐标）
     roi: list[int] | None = None
-    # F1 采集模式
-    capture_width: int = 2560
-    capture_height: int = 800
+    # F1 采集模式（HBVCAM-W2237-2 实测：SBS 1280x400@120 标称 / macOS 实测 75fps）
+    capture_width: int = 1280
+    capture_height: int = 400
     capture_fps: float = 120.0
     pixel_format: str = "auto"  # auto / mono8 / yuy2 / mjpeg
     camera_index: int = 0
+    camera_name: str = "USB Global Camera"  # ffmpeg 后端按名称选设备，避免索引漂移
+    capture_backend: str = "auto"  # auto / ffmpeg / opencv；macOS 下 auto 优先 ffmpeg
     # F3/F5 检测阈值
     presence_ratio: float = 0.02
     energy_trigger: float = 15.0

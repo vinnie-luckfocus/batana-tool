@@ -18,7 +18,7 @@ from collections import deque
 import numpy as np
 from PySide6.QtCore import QThread, QObject, Signal
 
-from app.capture import ClipWriter, FrameSource, RingBuffer, UvcSource, split_sbs
+from app.capture import ClipWriter, FfmpegUvcSource, FrameSource, RingBuffer, UvcSource, split_sbs
 from app.capture.ring_buffer import BufferItem
 from app.detect import CaptureStateMachine, Clip, PresenceDetector, Roi, State, SwingDetector
 from app.envcheck import EnvCheckSettings, check_brightness, check_flicker
@@ -32,6 +32,27 @@ _ENV_SAMPLE_STRIDE = 4  # 持续环境监测：每 4 帧采一次亮度样本（
 
 # 落盘任务 = (片段, 已提取帧序列, 编码帧率, 检测 ROI)
 _SaveJob = tuple[Clip, list[BufferItem], float, "Roi | None"]
+
+
+def build_uvc_source(s: AppSettings) -> FrameSource:
+    """按设置构建 UVC 帧源：macOS 下 auto 优先 ffmpeg 后端（OpenCV 协商会静默
+    回退到 1280x720@30），ffmpeg 缺失时回退 OpenCV。"""
+    backend = s.capture_backend
+    if backend in ("auto", "ffmpeg") and FfmpegUvcSource.available():
+        try:
+            return FfmpegUvcSource(
+                device=s.camera_name,
+                width=s.capture_width, height=s.capture_height,
+                fps=s.capture_fps,
+            )
+        except RuntimeError:
+            if backend == "ffmpeg":
+                raise
+    return UvcSource(
+        device_index=s.camera_index,
+        width=s.capture_width, height=s.capture_height,
+        fps=s.capture_fps, pixel_format=s.pixel_format,
+    )
 
 
 class _SaveWorker(QThread):
@@ -215,12 +236,7 @@ class CaptureController(QObject):
     def _build_source(self) -> FrameSource:
         if self._source is not None:
             return self._source
-        s = self.settings
-        return UvcSource(
-            device_index=s.camera_index,
-            width=s.capture_width, height=s.capture_height,
-            fps=s.capture_fps, pixel_format=s.pixel_format,
-        )
+        return build_uvc_source(self.settings)
 
     # ---- 属性 ----
 

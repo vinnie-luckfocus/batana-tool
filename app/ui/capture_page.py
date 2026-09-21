@@ -20,11 +20,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.capture import FileSource, UvcSource
+from app.capture import FileSource
 from app.detect import State
 from app.envcheck import EnvCheckSettings, EnvironmentChecker
 from app.session import SessionStore
-from app.ui.controller import CaptureController
+from app.ui.controller import CaptureController, build_uvc_source
 from app.ui.envcheck_dialog import EnvCheckDialog
 from app.ui.preview import VIEW_LEFT, VIEW_RIGHT, VIEW_SBS, PreviewWidget
 from app.ui.settings import AppSettings
@@ -331,12 +331,7 @@ class CapturePage(QWidget):
             if self._file_path:
                 source = FileSource(self._file_path)
             else:
-                s = self.settings
-                source = UvcSource(
-                    device_index=s.camera_index,
-                    width=s.capture_width, height=s.capture_height,
-                    fps=s.capture_fps, pixel_format=s.pixel_format,
-                )
+                source = build_uvc_source(self.settings)
         except Exception as e:
             self.status_line.setText(f"错误：{e}")
             if was_running:
