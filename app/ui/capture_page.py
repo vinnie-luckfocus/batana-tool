@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.capture import FileSource
+from app.capture import FileSource, VideoDevice
 from app.detect import State
 from app.envcheck import EnvCheckSettings, EnvironmentChecker
 from app.session import SessionStore
@@ -40,13 +40,47 @@ from app.ui.widgets import (
 )
 from app.voice import PROMPT_NO_SWING, error_prompt
 
-_SOURCE_UVC_PREFIX = "UVC 设备 "
 _SOURCE_FILE = "视频文件回放…"
 
 _VIEW_MODES = [("左目", VIEW_LEFT), ("右目", VIEW_RIGHT), ("双目并排", VIEW_SBS)]
 
 ROI_HINT_TEXT = "请先在画面上框选打击区"
 NO_SWING_TIMEOUT_MS = 15000  # M3：ARMED 持续 15s 无挥棒的语音提醒间隔
+
+
+class _SourceCombo(QComboBox):
+    """相机源下拉框：弹出时实时重枚举设备（热插拔友好），保留当前选择。"""
+
+    def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._settings = settings
+        self.repopulate()
+
+    def repopulate(self) -> None:
+        from app.capture import list_video_devices, pick_default
+
+        current = self.currentData()
+        prev = current.name if isinstance(current, VideoDevice) else self._settings.camera_name
+        was_file = self.currentText() == _SOURCE_FILE
+        self.blockSignals(True)
+        self.clear()
+        devices = list_video_devices()
+        for d in devices:
+            tag = " · 双目模组" if d.is_stereo_module else ""
+            self.addItem(f"{d.name}{tag}", d)
+        self.addItem(_SOURCE_FILE, None)
+        if was_file:
+            self.setCurrentIndex(self.count() - 1)
+        elif devices:
+            idx = next((i for i, d in enumerate(devices) if d.name == prev), -1)
+            if idx < 0:
+                idx = devices.index(pick_default(devices))
+            self.setCurrentIndex(idx)
+        self.blockSignals(False)
+
+    def showPopup(self) -> None:  # noqa: N802
+        self.repopulate()
+        super().showPopup()
 
 
 class CapturePage(QWidget):
@@ -202,10 +236,7 @@ class CapturePage(QWidget):
         src_row = QHBoxLayout()
         src_label = QLabel("相机源")
         src_label.setObjectName("dim")
-        self.combo_source = QComboBox()
-        for i in range(3):
-            self.combo_source.addItem(f"{_SOURCE_UVC_PREFIX}{i}")
-        self.combo_source.addItem(_SOURCE_FILE)
+        self.combo_source = _SourceCombo(self.settings)
         self.combo_source.currentIndexChanged.connect(self._on_source_changed)
         src_row.addWidget(src_label)
         src_row.addWidget(self.combo_source, stretch=1)
@@ -389,18 +420,43 @@ class CapturePage(QWidget):
             self.status_line.setText("采集已暂停（预览保持）")
 
     def _on_source_changed(self, index: int) -> None:
-        text = self.combo_source.currentText()
-        if text == _SOURCE_FILE:
+        data = self.combo_source.currentData()
+        if data is None:  # 视频文件回放
             path, _ = QFileDialog.getOpenFileName(
                 self, "选择视频文件", str(Path.home()),
                 "视频文件 (*.mkv *.mp4 *.avi *.mov)",
             )
             if path:
                 self.set_file_source(path)
-        else:
-            self._file_path = None
-            self.settings.camera_index = int(text.removeprefix(_SOURCE_UVC_PREFIX))
-            self.settings.save()
+            elif self._file_path is None:
+                # 取消选择且当前是相机源：回退显示当前相机
+                self.combo_source.blockSignals(True)
+                for i in range(self.combo_source.count()):
+                    d = self.combo_source.itemData(i)
+                    if isinstance(d, VideoDevice) and d.name == self.settings.camera_name:
+                        self.combo_source.setCurrentIndex(i)
+                        break
+                self.combo_source.blockSignals(False)
+            return
+        if not isinstance(data, VideoDevice):
+            return
+        if data.name == self.settings.camera_name and self._file_path is None:
+            return  # 未变化，不重建
+        self._file_path = None
+        self.settings.camera_name = data.name
+        self.settings.camera_index = data.index
+        self.settings.save()
+        self._restart_camera()
+
+    def _restart_camera(self) -> None:
+        """按当前设置重建相机源控制器（切换设备后生效）。"""
+        was_running = self.controller.running
+        self.controller.close()  # 旧控制器整体关停（含落盘 worker 与语音）
+        self.controller = CaptureController(self.settings, self.store)
+        self.attach_controller(self.controller)
+        self.status_line.setText(f"相机源：{self.settings.camera_name}")
+        if was_running:
+            self.controller.start()
 
     def set_file_source(self, path: str) -> None:
         """切到视频文件回放源（无相机演示模式）。"""
