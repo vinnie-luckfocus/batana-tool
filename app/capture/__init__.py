@@ -1,6 +1,7 @@
 """app.capture：双目采集层——帧源、SBS 切分、环缓冲、片段落盘。"""
 
 from app.capture.clip_writer import ClipPaths, ClipWriter, count_video_frames
+from app.capture.devices import VideoDevice, list_video_devices, pick_default
 from app.capture.ffmpeg_source import FfmpegUvcSource
 from app.capture.frame_source import FileSource, FrameSource, FrameTuple, UvcSource
 from app.capture.ring_buffer import BufferItem, RingBuffer
@@ -16,6 +17,9 @@ __all__ = [
     "FrameTuple",
     "RingBuffer",
     "UvcSource",
+    "VideoDevice",
     "count_video_frames",
+    "list_video_devices",
+    "pick_default",
     "split_sbs",
 ]

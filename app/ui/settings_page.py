@@ -23,12 +23,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.capture.devices import VideoDevice
 from app.ui.settings import AppSettings
 from app.ui.theme import ui_font
 from app.ui.widgets import SectionHeader, card_widget
 
 _FORMATS = ["auto", "mono8", "yuy2", "mjpeg"]
-_RESOLUTIONS = ["2560x800", "1280x400", "640x200"]
+# HBVCAM-W2237-2 实测档位（SBS 合并帧）：120fps / 60fps / 100fps
+_RESOLUTIONS = ["1280x400", "2560x720", "1600x600"]
 
 
 class SettingsPage(QWidget):
@@ -77,9 +79,19 @@ class SettingsPage(QWidget):
         self.combo_format = QComboBox()
         self.combo_format.addItems(_FORMATS)
         form.addRow(label("像素格式"), self.combo_format)
-        self.spin_camera = QSpinBox()
-        self.spin_camera.setRange(0, 8)
-        form.addRow(label("UVC 设备序号"), self.spin_camera)
+        cam_row = QHBoxLayout()
+        self.combo_camera = QComboBox()
+        self.combo_camera.setMinimumWidth(260)
+        self.btn_refresh_cam = QPushButton("刷新")
+        self.btn_refresh_cam.setFixedWidth(64)
+        self.btn_refresh_cam.clicked.connect(self._refresh_cameras)
+        cam_row.addWidget(self.combo_camera, stretch=1)
+        cam_row.addWidget(self.btn_refresh_cam)
+        cam_host = QWidget()
+        cam_host.setLayout(cam_row)
+        cam_row.setContentsMargins(0, 0, 0, 0)
+        form.addRow(label("相机设备"), cam_host)
+        self._refresh_cameras()
 
         form.addRow(SectionHeader("检测阈值"))
         self.spin_presence = QDoubleSpinBox()
@@ -206,6 +218,27 @@ class SettingsPage(QWidget):
         bt.addWidget(self.label_saved, stretch=1)
         root.addWidget(card_widget(bottom))
 
+    def _refresh_cameras(self) -> None:
+        """枚举 avfoundation 视频设备填充下拉框；优先保留当前选择。"""
+        from app.capture import list_video_devices, pick_default
+
+        current = self.combo_camera.currentData()
+        prev_name = (
+            current.name if isinstance(current, VideoDevice) else self.settings.camera_name
+        )
+        devices = list_video_devices()
+        self.combo_camera.clear()
+        if not devices:
+            self.combo_camera.addItem("未检测到相机（点「刷新」重试）", None)
+            return
+        for d in devices:
+            tag = " · 双目模组" if d.is_stereo_module else ""
+            self.combo_camera.addItem(f"{d.name}（#{d.index}）{tag}", d)
+        idx = next((i for i, d in enumerate(devices) if d.name == prev_name), -1)
+        if idx < 0:
+            idx = devices.index(pick_default(devices))
+        self.combo_camera.setCurrentIndex(idx)
+
     def _load_values(self) -> None:
         s = self.settings
         res = f"{s.capture_width}x{s.capture_height}"
@@ -216,7 +249,6 @@ class SettingsPage(QWidget):
         self.combo_format.setCurrentText(
             s.pixel_format if s.pixel_format in _FORMATS else "auto"
         )
-        self.spin_camera.setValue(s.camera_index)
         self.spin_presence.setValue(s.presence_ratio)
         self.spin_trigger.setValue(s.energy_trigger)
         self.spin_release.setValue(s.energy_release)
@@ -265,7 +297,10 @@ class SettingsPage(QWidget):
         s.capture_width, s.capture_height = int(w), int(h)
         s.capture_fps = float(self.spin_fps.value())
         s.pixel_format = self.combo_format.currentText()
-        s.camera_index = int(self.spin_camera.value())
+        cam = self.combo_camera.currentData()
+        if isinstance(cam, VideoDevice):
+            s.camera_index = cam.index
+            s.camera_name = cam.name
         s.presence_ratio = float(self.spin_presence.value())
         s.energy_trigger = float(self.spin_trigger.value())
         s.energy_release = float(self.spin_release.value())
