@@ -18,7 +18,15 @@ from collections import deque
 import numpy as np
 from PySide6.QtCore import QThread, QObject, Signal
 
-from app.capture import ClipWriter, FfmpegUvcSource, FrameSource, RingBuffer, UvcSource, split_sbs
+from app.capture import (
+    ClipWriter,
+    FfmpegUvcSource,
+    FrameSource,
+    RingBuffer,
+    UvcSource,
+    list_video_devices,
+    split_sbs,
+)
 from app.capture.ring_buffer import BufferItem
 from app.detect import CaptureStateMachine, Clip, PresenceDetector, Roi, State, SwingDetector
 from app.envcheck import EnvCheckSettings, check_brightness, check_flicker
@@ -34,9 +42,18 @@ _ENV_SAMPLE_STRIDE = 4  # 持续环境监测：每 4 帧采一次亮度样本（
 _SaveJob = tuple[Clip, list[BufferItem], float, "Roi | None"]
 
 
+# 模组已知主档位（HBVCAM-W2237-2）：旧设置里的假想规格（如 2560x800）
+# 协商失败时自动纠正到此模式，保证相机总能开起来
+_FALLBACK_MODE = (1280, 400, 120.0)
+
+
 def build_uvc_source(s: AppSettings) -> FrameSource:
     """按设置构建 UVC 帧源：macOS 下 auto 优先 ffmpeg 后端（OpenCV 协商会静默
-    回退到 1280x720@30），ffmpeg 缺失时回退 OpenCV。"""
+    回退到 1280x720@30），ffmpeg 缺失时回退 OpenCV。
+
+    容错：配置模式协商失败时自动改用 _FALLBACK_MODE 重试并回写设置；
+    OpenCV 回退按设备名解析最新序号（USB 枚举顺序会漂移，不能迷信存盘的 index）。
+    """
     backend = s.capture_backend
     if backend in ("auto", "ffmpeg") and FfmpegUvcSource.available():
         try:
@@ -48,8 +65,23 @@ def build_uvc_source(s: AppSettings) -> FrameSource:
         except RuntimeError:
             if backend == "ffmpeg":
                 raise
+            w, h, fps = _FALLBACK_MODE
+            if (s.capture_width, s.capture_height, s.capture_fps) != (w, h, fps):
+                try:
+                    src = FfmpegUvcSource(device=s.camera_name, width=w, height=h, fps=fps)
+                except RuntimeError:
+                    pass
+                else:
+                    s.capture_width, s.capture_height, s.capture_fps = w, h, fps
+                    s.save()
+                    return src
+    index = s.camera_index
+    for d in list_video_devices():
+        if d.name == s.camera_name:
+            index = d.index
+            break
     return UvcSource(
-        device_index=s.camera_index,
+        device_index=index,
         width=s.capture_width, height=s.capture_height,
         fps=s.capture_fps, pixel_format=s.pixel_format,
     )

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import platform
+import select
 import shutil
 import subprocess
 import time
@@ -77,24 +78,37 @@ class FfmpegUvcSource:
     def available() -> bool:
         return platform.system() == "Darwin" and shutil.which("ffmpeg") is not None
 
-    def _read_exact(self, n: int) -> bytes:
+    def _read_exact(self, n: int, timeout: float = 10.0) -> bytes:
+        """读满 n 字节；超时（如相机权限被拒导致无帧）按断流处理。"""
         buf = bytearray()
         assert self._proc.stdout is not None
+        deadline = time.monotonic() + timeout
         while len(buf) < n:
-            chunk = self._proc.stdout.read(n - len(buf))
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                break
+            try:
+                fd = self._proc.stdout.fileno()
+                ready = select.select([fd], [], [], remain)[0]
+            except (OSError, ValueError):
+                ready = True  # 非管道流（测试替身等），直接读
+            if not ready:
+                break  # 超时无数据
+            chunk = self._proc.stdout.read1(n - len(buf)) if hasattr(
+                self._proc.stdout, "read1") else self._proc.stdout.read(n - len(buf))
             if not chunk:
                 break
             buf.extend(chunk)
         return bytes(buf)
 
     def _fail(self, msg: str) -> RuntimeError:
+        self.close()  # 先终止进程再收 stderr，否则进程存活时 stderr.read() 永久阻塞
         stderr = ""
-        if self._proc.stderr is not None:
-            try:
+        try:
+            if self._proc.stderr is not None:
                 stderr = self._proc.stderr.read().decode("utf-8", "replace").strip()
-            except Exception:
-                pass
-        self.close()
+        except Exception:
+            pass
         detail = f"：{stderr}" if stderr else ""
         return RuntimeError(f"{msg}{detail}")
 
