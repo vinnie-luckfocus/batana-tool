@@ -1,6 +1,6 @@
 [package]
 name = "batana-tool"
-version = "0.5.0"
+version = "0.1.0"
 description = "Batana 素材采集与标注工具"
 authors = ["Batana"]
 edition = "2021"
