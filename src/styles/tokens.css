@@ -1,0 +1,49 @@
+/* Batana 生态设计令牌 v1.0 —— 见 batana 司令塔 docs/uiux-guidelines.md
+   取值禁止偏离规范；此处为 Web/Tauri 落地映射（规范第 7 节）。 */
+
+:root {
+  /* 语义色（macOS 系统色基准值，浅色） */
+  --accent: #007aff;
+  --green: #28cd41;
+  --red: #ff3b30;
+  --orange: #ff9500;
+  --yellow: #ffcc00;
+  --fg: #1d1d1f;
+  --fg-dim: #86868b;
+  --card-bg: rgba(255, 255, 255, 0.72);
+  --hairline: rgba(0, 0, 0, 0.08);
+  --track: rgba(0, 0, 0, 0.06);
+  --shadow: 0 6px 28px rgba(0, 0, 0, 0.12);
+
+  /* 间距（8pt 网格） */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* 圆角 */
+  --r-control: 8px;
+  --r-card: 12px;
+  --r-modal: 14px;
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #0a84ff;
+    --green: #30d158;
+    --red: #ff453a;
+    --orange: #ff9f0a;
+    --yellow: #ffd60a;
+    --fg: #f5f5f7;
+    --fg-dim: #98989d;
+    --card-bg: rgba(30, 30, 32, 0.64);
+    --hairline: rgba(255, 255, 255, 0.12);
+    --track: rgba(255, 255, 255, 0.08);
+    --shadow: 0 6px 28px rgba(0, 0, 0, 0.4);
+  }
+}

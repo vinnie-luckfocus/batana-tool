@@ -1,0 +1,23 @@
+[package]
+name = "batana-tool"
+version = "0.5.0"
+description = "Batana 素材采集与标注工具"
+authors = ["Batana"]
+edition = "2021"
+
+[lib]
+name = "batana_tool_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "protocol-asset"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+window-vibrancy = "0.6"
+# 视频 sha256（契约可选字段）与 ULID 随机数；均已存在于 Cargo.lock
+sha2 = "0.10"
+getrandom = "0.3"

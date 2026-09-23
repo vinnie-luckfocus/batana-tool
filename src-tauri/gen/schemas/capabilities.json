@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"主窗口默认权限：core 默认值 + 标题栏拖拽（透明 Overlay 标题栏必需）","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging"]}}
