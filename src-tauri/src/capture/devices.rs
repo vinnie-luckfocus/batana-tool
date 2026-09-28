@@ -81,10 +81,11 @@ fn parse_device_line(line: &str) -> Option<VideoDevice> {
     Some(VideoDevice::new(index, name))
 }
 
-/// 枚举 avfoundation 视频设备；ffmpeg 缺失或失败时返回空列表。
-pub fn list_video_devices() -> Vec<VideoDevice> {
+/// 枚举 avfoundation 视频设备。
+/// ffmpeg 缺失或执行失败时返回 Err（含排查指引），区别于"无相机"的空列表。
+pub fn list_video_devices() -> Result<Vec<VideoDevice>, String> {
     let Some(ffmpeg) = find_in_path("ffmpeg") else {
-        return Vec::new();
+        return Err("未找到 ffmpeg：请通过 brew install ffmpeg 安装后重启应用".into());
     };
     let output = std::process::Command::new(ffmpeg)
         .args([
@@ -102,9 +103,9 @@ pub fn list_video_devices() -> Vec<VideoDevice> {
             let mut text = String::from_utf8_lossy(&out.stderr).into_owned();
             text.push('\n');
             text.push_str(&String::from_utf8_lossy(&out.stdout));
-            parse_device_list(&text)
+            Ok(parse_device_list(&text))
         }
-        Err(_) => Vec::new(),
+        Err(e) => Err(format!("ffmpeg 设备枚举执行失败：{e}")),
     }
 }
 

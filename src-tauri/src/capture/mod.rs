@@ -66,10 +66,19 @@ impl GrayFrame {
 pub type BufferItem = (u64, u64, GrayFrame, GrayFrame);
 
 /// 在 PATH 中查找可执行文件（等价 shutil.which）。
+/// GUI 启动（Finder/launchd/打包 .app）时 PATH 极简，追加常见安装位置兜底。
 pub fn find_in_path(exe: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let p = dir.join(exe);
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let p = dir.join(exe);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+        let p = PathBuf::from(dir).join(exe);
         if p.is_file() {
             return Some(p);
         }
@@ -458,7 +467,7 @@ fn preview_rgba(frame: &GrayFrame) -> (u32, u32, Vec<u8>) {
 // ---- Tauri 命令 ----
 
 #[tauri::command]
-pub fn list_devices() -> Vec<VideoDevice> {
+pub fn list_devices() -> Result<Vec<VideoDevice>, String> {
     list_video_devices()
 }
 
@@ -550,6 +559,23 @@ pub fn set_muted(state: tauri::State<'_, Arc<Mutex<AppState>>>, muted: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn find_in_path_falls_back_to_homebrew() {
+        // GUI 启动（Finder/打包 .app）时 PATH 极简的复现场景
+        let homebrew_ffmpeg = PathBuf::from("/opt/homebrew/bin/ffmpeg");
+        if !homebrew_ffmpeg.is_file() {
+            return; // 本机无 Homebrew ffmpeg 时跳过
+        }
+        let original = std::env::var_os("PATH");
+        std::env::set_var("PATH", "/usr/bin:/bin");
+        let found = find_in_path("ffmpeg");
+        if let Some(p) = original {
+            std::env::set_var("PATH", p);
+        }
+        assert_eq!(found, Some(homebrew_ffmpeg));
+    }
 
     #[test]
     fn split_sbs_halves_frame() {

@@ -505,10 +505,11 @@ export function createCapturePage(_ctx: AppContext): Page {
   // ---- 相机源 ----
   async function populateCameras(): Promise<void> {
     let devices: VideoDevice[] = [];
+    let listError = "";
     try {
       devices = await listDevices();
-    } catch {
-      devices = [];
+    } catch (e) {
+      listError = String(e);
     }
     const prev = store.settings?.camera_name ?? "";
     camSelect.textContent = "";
@@ -524,6 +525,7 @@ export function createCapturePage(_ctx: AppContext): Page {
       opt.value = "";
       opt.textContent = "未检测到相机";
       camSelect.append(opt);
+      setStatus(listError || "未检测到相机：请检查 USB 连接后点「刷新」");
     }
     const idx = devices.findIndex((d) => d.name === prev);
     if (idx < 0 && prev) {

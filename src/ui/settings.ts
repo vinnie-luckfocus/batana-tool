@@ -160,10 +160,11 @@ export function createSettingsPage(_ctx: AppContext): Page {
 
   async function populateCameras(): Promise<void> {
     let devices: VideoDevice[] = [];
+    let listError = "";
     try {
       devices = await listDevices();
-    } catch {
-      devices = [];
+    } catch (e) {
+      listError = String(e);
     }
     const prev = draft?.camera_name ?? "";
     camSelect.textContent = "";
@@ -192,6 +193,7 @@ export function createSettingsPage(_ctx: AppContext): Page {
       o.textContent = "未检测到相机";
       camSelect.append(o);
     }
+    if (listError) feedback.textContent = listError;
   }
 
   // ---- 保存 ----
