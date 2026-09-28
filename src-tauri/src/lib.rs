@@ -32,6 +32,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             capture::list_devices,
             capture::start_capture,
+            capture::start_preview,
             capture::stop_capture,
             capture::discard_clip,
             capture::manual_toggle,

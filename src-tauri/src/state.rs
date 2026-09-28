@@ -295,10 +295,17 @@ impl CaptureStateMachine {
     fn finish_swing(&mut self, end_idx: u64, reason: &str) {
         self.seq += 1;
         let trigger = self.trigger_idx.max(0) as u64;
-        let mut start_idx = trigger.saturating_sub(self.swing.pre_roll_frames());
+        let want_start = trigger.saturating_sub(self.swing.pre_roll_frames());
+        let mut start_idx = want_start;
         if let Some((oldest, _)) = self.buffer.span() {
             start_idx = start_idx.max(oldest);
         }
+        // 缓冲容量不足导致片头被截：reason 标注，前端可见（建议增大 buffer_seconds）
+        let reason = if start_idx > want_start {
+            format!("{reason}_clipped")
+        } else {
+            reason.to_string()
+        };
         let clip = Clip {
             seq: self.seq,
             start_idx,
@@ -309,7 +316,7 @@ impl CaptureStateMachine {
         self.trigger_idx = -1;
         self.swing.reset();
         self.speak(PROMPT_SWING_DONE, 0);
-        self.transition(SmState::Saving, reason, Some(clip.clone()));
+        self.transition(SmState::Saving, &reason, Some(clip.clone()));
         if self.clip_saver.is_some() {
             let frames = self.buffer.extract(clip.start_idx, clip.end_idx);
             let saver = self.clip_saver.as_mut().unwrap();

@@ -39,6 +39,21 @@ pub fn prompt_saved(seq: u64) -> String {
     format!("已保存，第 {seq} 段，请准备下一段")
 }
 
+/// 倒计时节拍播报（纯数字文本，如 "3"/"2"/"1"）
+fn is_countdown_tick(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_digit())
+}
+
+/// 入队前的队列整理策略：(是否清空全队列, 是否丢弃未播出的倒计时数字)。
+/// 新周期开始（已就位/已保存）→ 清空；非倒计时播报 → 丢弃过期节拍。
+fn queue_policy(new_text: &str) -> (bool, bool) {
+    if new_text == PROMPT_READY || new_text.starts_with("已保存") {
+        (true, false)
+    } else {
+        (false, !is_countdown_tick(new_text))
+    }
+}
+
 /// TTS 抽象：异步播报，永不阻塞采集流程。
 pub trait Voice: Send {
     /// 播报文本；priority 越大越优先（默认 0）。
@@ -158,6 +173,14 @@ impl Voice for SayVoice {
         if g.muted || g.closed {
             return;
         }
+        // 时序同步：say 进程spawn/播报各约 0.5–1s，队列积压会导致语音提示
+        // 落后实际采集状态。按 queue_policy 整理后再入队。
+        let (clear_all, drop_ticks) = queue_policy(text);
+        if clear_all {
+            g.heap.clear();
+        } else if drop_ticks {
+            g.heap.retain(|it| !is_countdown_tick(&it.text));
+        }
         g.seq += 1;
         let seq = g.seq;
         g.heap.push(Item {
@@ -247,5 +270,21 @@ mod tests {
         v.set_muted(true);
         v.speak(PROMPT_SWING, 0);
         assert_eq!(v.texts(), vec![PROMPT_READY.to_string()]);
+    }
+
+    #[test]
+    fn queue_policy_syncs_voice_to_capture_cycle() {
+        // 倒计时数字：不清空、不丢弃（正常入队）
+        assert_eq!(queue_policy("3"), (false, false));
+        // 新周期（已就位/已保存）：清空上一周期残留
+        assert_eq!(queue_policy(PROMPT_READY), (true, false));
+        assert_eq!(queue_policy(&prompt_saved(1)), (true, false));
+        // 请挥棒/挥棒完成等：丢弃未播出的过期节拍
+        assert_eq!(queue_policy(PROMPT_SWING), (false, true));
+        assert_eq!(queue_policy(PROMPT_SWING_DONE), (false, true));
+        // 节拍判定
+        assert!(is_countdown_tick("12"));
+        assert!(!is_countdown_tick("请挥棒"));
+        assert!(!is_countdown_tick(""));
     }
 }

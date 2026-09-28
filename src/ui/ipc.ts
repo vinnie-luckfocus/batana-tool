@@ -93,6 +93,7 @@ export interface Pose2dFile {
 // ---- 命令封装 ----
 export const listDevices = () => invoke<VideoDevice[]>("list_devices");
 export const startCapture = (channel: Channel<unknown>) => invoke<void>("start_capture", { channel });
+export const startPreview = (channel: Channel<unknown>) => invoke<void>("start_preview", { channel });
 export const stopCapture = () => invoke<void>("stop_capture");
 export const discardClip = () => invoke<void>("discard_clip");
 export const manualToggle = () => invoke<string>("manual_toggle");

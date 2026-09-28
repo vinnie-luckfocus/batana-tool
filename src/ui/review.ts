@@ -49,6 +49,8 @@ export function createReviewPage(ctx: AppContext): Page {
   let poseOn = false;
   let loadSeq = 0; // 防止旧选择异步覆盖新选择
   let deleteArmTimer = 0;
+  const selected = new Set<string>(); // 批量管理：选中素材 id 集（按 id 跨 refresh 存活）
+  let batchArmTimer = 0;
 
   // ---- DOM ----
   const filterSelect = el(
@@ -67,6 +69,45 @@ export function createReviewPage(ctx: AppContext): Page {
   });
 
   const clipList = el("div", { class: "clip-list" });
+
+  // ---- 批量管理：顶部极简行（全选+计数），选中后底部浮出操作条 ----
+  const selAll = el("input", { type: "checkbox", class: "clip-check" }) as HTMLInputElement;
+  selAll.title = "全选当前筛选结果";
+  selAll.addEventListener("change", () => {
+    const items = sessions.filter((s) => filter === "全部" || s.verdict === filter);
+    if (selAll.checked) {
+      for (const s of items) selected.add(s.id);
+    } else {
+      selected.clear();
+    }
+    renderList();
+  });
+  const selCount = el("span", { class: "batch-count" }, "");
+  const batchBar = el(
+    "div",
+    { class: "batch-bar" },
+    selAll,
+    el("span", { class: "batch-count" }, "全选"),
+    el("span", { class: "spacer" }),
+    selCount,
+  );
+
+  const floatCount = el("span", { class: "count" }, "");
+  const btnBatchPass = button("合格", "secondary", () => void batchMark(STATUS_PASS));
+  const btnBatchReview = button("待复核", "secondary", () => void batchMark(STATUS_REVIEW));
+  const btnBatchFail = button("不合格", "secondary", () => void batchMark(STATUS_FAIL));
+  const btnBatchDelete = button("删除", "danger", () => void batchDelete());
+  const batchFloat = el(
+    "div",
+    { class: "batch-float", style: "display:none" },
+    floatCount,
+    el("span", { class: "spacer" }),
+    btnBatchPass,
+    btnBatchReview,
+    btnBatchFail,
+    btnBatchDelete,
+  );
+
   const listEmpty = el(
     "div",
     { class: "list-empty", style: "display:none" },
@@ -144,17 +185,20 @@ export function createReviewPage(ctx: AppContext): Page {
   const btnDelete = button("删除素材", "danger", () => void onDeleteClicked());
   markRow.append(el("span", { class: "spacer" }), btnDelete);
 
+  const side = el(
+    "div",
+    { class: "review-side" },
+    sectionHeader("素材"),
+    filterSelect,
+    batchBar,
+    clipList,
+    listEmpty,
+    batchFloat,
+  );
   const node = el(
     "div",
     { class: "page review-page" },
-    el(
-      "div",
-      { class: "review-side" },
-      sectionHeader("素材"),
-      filterSelect,
-      clipList,
-      listEmpty,
-    ),
+    side,
     el(
       "div",
       { class: "review-main" },
@@ -190,20 +234,41 @@ export function createReviewPage(ctx: AppContext): Page {
     clipList.textContent = "";
     const items = sessions.filter((s) => filter === "全部" || s.verdict === filter);
     listEmpty.style.display = items.length === 0 ? "" : "none";
+    // 全选框状态：当前筛选结果全选中才勾
+    selAll.checked = items.length > 0 && items.every((s) => selected.has(s.id));
+    const n = selected.size;
+    selCount.textContent = n > 0 ? `已选 ${n} 段` : "";
+    batchFloat.style.display = n > 0 ? "" : "none";
+    side.classList.toggle("has-batch", n > 0);
+    floatCount.textContent = `已选 ${n} 段`;
+    if (n === 0) disarmBatchDelete();
     for (const s of items) {
+      const check = el("input", { type: "checkbox", class: "clip-check" }) as HTMLInputElement;
+      check.checked = selected.has(s.id);
+      check.addEventListener("click", (e) => e.stopPropagation());
+      check.addEventListener("change", () => {
+        if (check.checked) selected.add(s.id);
+        else selected.delete(s.id);
+        renderList();
+      });
       const item = el(
         "div",
-        { class: `clip-item${current?.id === s.id ? " on" : ""}` },
+        { class: `clip-item${current?.id === s.id ? " on" : ""}${selected.has(s.id) ? " sel" : ""}` },
+        check,
         el(
           "div",
-          { class: "clip-item-top" },
-          el("span", { class: "clip-item-title" }, `#${s.seq} · ${fmtLocalTime(s.created_at)}`),
-          pill(s.verdict, VERDICT_TONE[s.verdict] ?? "dim"),
-        ),
-        el(
-          "div",
-          { class: "clip-item-sub num" },
-          `${(s.frame_count / Math.max(s.fps, 1)).toFixed(1)}s · ${s.frame_count} 帧 @ ${s.fps}fps`,
+          { class: "clip-item-body" },
+          el(
+            "div",
+            { class: "clip-item-top" },
+            el("span", { class: "clip-item-title" }, `#${s.seq} · ${fmtLocalTime(s.created_at)}`),
+            pill(s.verdict, VERDICT_TONE[s.verdict] ?? "dim"),
+          ),
+          el(
+            "div",
+            { class: "clip-item-sub num" },
+            `${(s.frame_count / Math.max(s.fps, 1)).toFixed(1)}s · ${s.frame_count} 帧 @ ${s.fps}fps`,
+          ),
         ),
       );
       item.addEventListener("click", () => select(s));
@@ -211,11 +276,90 @@ export function createReviewPage(ctx: AppContext): Page {
     }
   }
 
+  // ---- 批量操作 ----
+  function disarmBatchDelete(): void {
+    window.clearTimeout(batchArmTimer);
+    btnBatchDelete.textContent = "删除";
+  }
+
+  async function batchMark(status: string): Promise<void> {
+    if (selected.size === 0) return;
+    const ids = [...selected];
+    let ok = 0;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await markSession(id, status);
+        ok++;
+      } catch {
+        failed++;
+      }
+    }
+    selected.clear();
+    disarmBatchDelete();
+    await refresh();
+    // 当前播放素材若在被批量标记之列，同步头部 pill
+    if (current) {
+      const rec = sessions.find((x) => x.id === current!.id);
+      if (rec) {
+        current = rec;
+        setPill(verdictPill, rec.verdict, VERDICT_TONE[rec.verdict] ?? "dim");
+        refreshMarkButtons();
+      }
+    }
+    selCount.textContent = failed > 0 ? `已标记 ${ok} 段，失败 ${failed} 段` : `已标记 ${ok} 段为「${status}」`;
+  }
+
+  async function batchDelete(): Promise<void> {
+    if (selected.size === 0) return;
+    const n = selected.size;
+    if (!btnBatchDelete.textContent?.includes("确认")) {
+      // 破坏操作二次确认（规范 4）
+      btnBatchDelete.textContent = `确认删除 ${n} 段`;
+      batchArmTimer = window.setTimeout(disarmBatchDelete, 4000);
+      return;
+    }
+    disarmBatchDelete();
+    const ids = [...selected];
+    let ok = 0;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await deleteSession(id);
+        ok++;
+      } catch {
+        failed++;
+      }
+    }
+    selected.clear();
+    if (current && ids.includes(current.id)) {
+      // 当前播放素材被删：复位播放器
+      current = null;
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      video.style.display = "none";
+      videoMsg.textContent = "从左侧列表选择一段素材";
+      videoMsg.style.display = "";
+      titleEl.textContent = "未选择素材";
+      titleEl.classList.add("dim");
+      verdictPill.style.display = "none";
+      eyeSeg.node.style.display = "none";
+      poseToggle.style.display = "none";
+      pose = null;
+      poseOn = false;
+      updateFrameUi();
+    }
+    await refresh();
+    selCount.textContent = failed > 0 ? `已删除 ${ok} 段，失败 ${failed} 段` : `已删除 ${ok} 段`;
+  }
+
   // ---- 选择与播放 ----
   async function select(s: SessionSummary): Promise<void> {
     current = s;
     renderList();
-    titleEl.textContent = `${s.id} · ${fmtLocalTime(s.created_at)}`;
+    titleEl.textContent = `#${s.seq} · ${fmtLocalTime(s.created_at)}`;
+    titleEl.title = s.id; // 完整 session id 悬停可见
     titleEl.classList.remove("dim");
     setPill(verdictPill, s.verdict, VERDICT_TONE[s.verdict] ?? "dim");
     verdictPill.style.display = "";

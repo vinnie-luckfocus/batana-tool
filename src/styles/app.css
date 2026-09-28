@@ -658,13 +658,22 @@ input[type="range"]::-webkit-slider-thumb {
 
 .clip-item {
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-control);
   border: 0.5px solid var(--hairline);
   background: var(--card-bg);
   transition: background-color 140ms ease-out;
+}
+
+.clip-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .clip-item:hover {
@@ -694,6 +703,94 @@ input[type="range"]::-webkit-slider-thumb {
 .clip-item-sub {
   font-size: 11px;
   color: var(--fg-dim);
+}
+
+/* ---- 批量管理 ---- */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 4px;
+  min-height: 16px;
+}
+
+.batch-bar .spacer {
+  flex: 1;
+}
+
+.batch-count {
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+/* 选中后底部浮出的操作条（毛玻璃，不挤压列表排版） */
+.review-side {
+  position: relative;
+}
+
+.batch-float {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--r-card);
+  border: 0.5px solid var(--hairline);
+  background: color-mix(in srgb, var(--card-bg) 82%, transparent);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.batch-float .count {
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.batch-float .spacer {
+  flex: 1;
+}
+
+.batch-float .btn {
+  padding: 3px 9px;
+  font-size: 11px;
+}
+
+/* 浮条遮挡预留：选中时列表底部留出空间 */
+.review-side.has-batch .clip-list {
+  padding-bottom: 52px;
+}
+
+.clip-check {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin: 0;
+  border-radius: 4px;
+  border: 0.5px solid var(--hairline);
+  background: var(--card-bg);
+  cursor: pointer;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out;
+}
+
+.clip-check:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.5 6 10.5 11 4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 12px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.clip-item.sel {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .review-main {

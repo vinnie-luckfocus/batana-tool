@@ -13,6 +13,7 @@ import {
   saveSettings,
   setMuted,
   startCapture,
+  startPreview,
   stopCapture,
   store,
 } from "./ipc";
@@ -20,8 +21,8 @@ import type { AppContext, Page } from "./app";
 
 type ViewMode = "left" | "right" | "sbs";
 
-/** 首帧到达前的画布占位尺寸（左目原生分辨率，1280x400 SBS → 640x400） */
-const DEFAULT_FW = 640;
+/** 首帧到达前的画布占位尺寸（SBS 双目整帧 1280x400） */
+const DEFAULT_FW = 1280;
 const DEFAULT_FH = 400;
 /** 运动占比细条满格 = 10%（对齐旧版 MiniBar 量纲） */
 const METER_MAX_PCT = 10;
@@ -52,8 +53,10 @@ function errorAdvice(message: string): string {
 export function createCapturePage(_ctx: AppContext): Page {
   // ---- 状态 ----
   let capturing = false;
+  let previewing = false; // 对焦预览模式（只开相机不采集）
   let smState: SmStateName | null = null;
   let viewMode: ViewMode = "left";
+  // latestFrame 为 SBS 整帧（双目并排，后端原生分辨率）
   let latestFrame: { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number } | null = null;
   let readySince = 0;
   let countdownTimer = 0;
@@ -106,6 +109,8 @@ export function createCapturePage(_ctx: AppContext): Page {
 
   const btnStart = button("开始采集", "primary", () => void toggleCapture());
   btnStart.classList.add("btn-block");
+  const btnPreview = button("对焦预览", "secondary", () => void togglePreview());
+  btnPreview.title = "只开相机出画面，不检测不落盘——用于手动对焦与机位调整";
   const btnManualStart = button("手动开始挥棒", "secondary", () => void doManualToggle());
   const btnManualStop = button("手动结束", "secondary", () => void doManualToggle());
   const btnDiscard = button("丢弃重拍", "danger", () => void doDiscard());
@@ -157,6 +162,7 @@ export function createCapturePage(_ctx: AppContext): Page {
           sectionHeader("采集控制"),
           el("div", { class: "controls-card" },
             btnStart,
+            btnPreview,
             el("div", { class: "ctl-row" }, btnManualStart, btnManualStop),
             btnDiscard,
             el("div", { class: "ctl-row" }, el("span", { class: "ctl-label" }, "静音"), muteSwitch),
@@ -174,6 +180,9 @@ export function createCapturePage(_ctx: AppContext): Page {
   }
 
   // ---- 预览渲染 ----
+  // SBS 整帧先落离屏画布，render 按视图模式裁左/右/全宽（drawImage 裁剪）
+  const srcCv = document.createElement("canvas");
+
   function frameSize(): { w: number; h: number } {
     return latestFrame
       ? { w: latestFrame.width, h: latestFrame.height }
@@ -182,7 +191,7 @@ export function createCapturePage(_ctx: AppContext): Page {
 
   function syncCanvasSize(): void {
     const { w: fw, h: fh } = frameSize();
-    const w = viewMode === "sbs" ? fw * 2 : fw;
+    const w = viewMode === "sbs" ? fw : fw / 2;
     if (previewCv.width !== w || previewCv.height !== fh) {
       previewCv.width = w;
       previewCv.height = fh;
@@ -195,25 +204,17 @@ export function createCapturePage(_ctx: AppContext): Page {
   function render(): void {
     syncCanvasSize();
     const { w: fw, h: fh } = frameSize();
+    const half = fw / 2;
+    const vw = viewMode === "sbs" ? fw : half;
+    const sx = viewMode === "right" ? half : 0;
     const g = previewCv.getContext("2d")!;
-    if (viewMode === "right") {
-      g.fillStyle = "#2a2a2c";
-      g.fillRect(0, 0, previewCv.width, previewCv.height);
-      g.fillStyle = "rgba(255,255,255,0.35)";
-      g.font = "12px -apple-system, sans-serif";
-      g.textAlign = "center";
-      g.fillText("预览流仅含左目，右目不可用", previewCv.width / 2, fh / 2);
-    } else if (latestFrame) {
-      const img = new ImageData(latestFrame.data, latestFrame.width, latestFrame.height);
-      g.putImageData(img, 0, 0);
-      if (viewMode === "sbs") {
-        g.fillStyle = "#2a2a2c";
-        g.fillRect(fw, 0, fw, fh);
-        g.fillStyle = "rgba(255,255,255,0.35)";
-        g.font = "12px -apple-system, sans-serif";
-        g.textAlign = "center";
-        g.fillText("右目", fw + fw / 2, fh / 2);
+    if (latestFrame) {
+      if (srcCv.width !== fw || srcCv.height !== fh) {
+        srcCv.width = fw;
+        srcCv.height = fh;
       }
+      srcCv.getContext("2d")!.putImageData(new ImageData(latestFrame.data, fw, fh), 0, 0);
+      g.drawImage(srcCv, sx, 0, vw, fh, 0, 0, vw, fh);
     } else {
       g.fillStyle = "#000";
       g.fillRect(0, 0, previewCv.width, previewCv.height);
@@ -244,6 +245,8 @@ export function createCapturePage(_ctx: AppContext): Page {
     if (w === 0) return;
     const g = overlayCv.getContext("2d")!;
     g.clearRect(0, 0, w, h);
+    // ROI 定义在左目坐标系：右目视图不绘制（坐标不适用）
+    if (viewMode === "right") return;
     const roiNorm = roiDraft ?? currentRoiNorm();
     if (!roiNorm) return;
     const half = viewMode === "sbs" ? w / 2 : w;
@@ -390,10 +393,13 @@ export function createCapturePage(_ctx: AppContext): Page {
 
   function updateButtons(): void {
     btnStart.textContent = capturing ? "停止采集" : "开始采集";
-    btnManualStart.disabled = !capturing || smState !== "ARMED";
-    btnManualStop.disabled = !capturing || smState !== "SWING";
-    btnDiscard.disabled = !capturing || (smState !== "ARMED" && smState !== "SWING");
-    previewEmpty.style.display = capturing ? "none" : "";
+    btnStart.disabled = previewing;
+    btnPreview.textContent = previewing ? "停止预览" : "对焦预览";
+    btnPreview.disabled = capturing;
+    btnManualStart.disabled = !capturing || previewing || smState !== "ARMED";
+    btnManualStop.disabled = !capturing || previewing || smState !== "SWING";
+    btnDiscard.disabled = !capturing || previewing || (smState !== "ARMED" && smState !== "SWING");
+    previewEmpty.style.display = capturing || previewing ? "none" : "";
   }
 
   // ---- 采集事件 ----
@@ -418,10 +424,12 @@ export function createCapturePage(_ctx: AppContext): Page {
       }
       case "telemetry": {
         mFps.set(ev.fps.toFixed(1));
-        mPresence.set(`${(ev.presence_ratio * 100).toFixed(1)}%`);
-        const pct = ev.motion_ratio * 100;
-        mMotion.set(`${pct.toFixed(2)}%`);
-        meterFill.style.width = `${Math.min((pct / METER_MAX_PCT) * 100, 100)}%`;
+        if (!previewing) {
+          mPresence.set(`${(ev.presence_ratio * 100).toFixed(1)}%`);
+          const pct = ev.motion_ratio * 100;
+          mMotion.set(`${pct.toFixed(2)}%`);
+          meterFill.style.width = `${Math.min((pct / METER_MAX_PCT) * 100, 100)}%`;
+        }
         break;
       }
       case "state_changed": {
@@ -462,7 +470,31 @@ export function createCapturePage(_ctx: AppContext): Page {
     }
   }
 
+  // ---- 对焦预览（只开相机不采集） ----
+  async function togglePreview(): Promise<void> {
+    if (previewing) {
+      await stop();
+      return;
+    }
+    hideError();
+    try {
+      const ch = new Channel<unknown>();
+      ch.onmessage = handleEvent;
+      await startPreview(ch);
+      previewing = true;
+      latestFrame = null;
+      banner.textContent = "对焦预览中";
+      banner.className = "state-banner state-dim";
+      setStatus("对焦预览中（不检测、不落盘），调整镜头焦距后点「停止预览」");
+      render();
+    } catch (e) {
+      showError(String(e));
+    }
+    updateButtons();
+  }
+
   async function start(): Promise<void> {
+    if (previewing) await stop(); // 与对焦预览互斥
     hideError();
     try {
       const ch = new Channel<unknown>();
@@ -485,10 +517,12 @@ export function createCapturePage(_ctx: AppContext): Page {
     } catch {
       /* 幂等 */
     }
+    const wasPreview = previewing;
     capturing = false;
+    previewing = false;
     setBanner(null);
     hideError();
-    setStatus("已停止采集");
+    setStatus(wasPreview ? "已停止预览" : "已停止采集");
     mFps.set("--");
     mPresence.set("--");
     mMotion.set("--");

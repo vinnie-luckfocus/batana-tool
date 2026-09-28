@@ -108,8 +108,9 @@ pub fn split_sbs(frame: &GrayFrame) -> Result<(GrayFrame, GrayFrame), String> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CaptureEvent {
-    /// 预览帧：左目原生分辨率灰度（MONO8）base64（已降频 ≤30fps）
-    /// 用 base64 而非字节数组：serde_json 数字数组序列化是采集主循环的最大开销
+    /// 预览帧：SBS 整帧（双目并排）原生分辨率灰度 base64（已降频 ≤30fps）。
+    /// 前端按视图模式裁左/右目。用 base64 而非字节数组：
+    /// serde_json 数字数组序列化是采集主循环的最大开销
     Preview { width: u32, height: u32, gray_b64: String },
     /// 遥测：实测帧率 / 就位占比(0-1) / 运动占比(0-1) / 状态名
     Telemetry {
@@ -414,12 +415,13 @@ fn run_capture_inner(
 
         if idx % preview_stride == 0 {
             use base64::Engine;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&left.data[..]);
+            // 发 SBS 整帧（双目），前端按视图模式裁剪
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&sbs.data[..]);
             emit(
                 channel,
                 &CaptureEvent::Preview {
-                    width: left.width as u32,
-                    height: left.height as u32,
+                    width: sbs.width as u32,
+                    height: sbs.height as u32,
                     gray_b64: b64,
                 },
             );
@@ -502,6 +504,104 @@ pub fn stop_capture(state: tauri::State<'_, Arc<Mutex<AppState>>>) -> Result<(),
         // 帧读取有 10s 断流超时，极端情况下 join 最长阻塞一个超时周期
         let _ = join.join();
     }
+    Ok(())
+}
+
+/// 对焦预览模式：只开相机出预览流（双目 SBS + 帧率遥测），
+/// 不跑状态机/语音/检测/落盘——供手动对焦与机位调试使用。
+#[tauri::command]
+pub fn start_preview(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+    channel: Channel<serde_json::Value>,
+) -> Result<(), String> {
+    let mut st = state.lock().map_err(|e| e.to_string())?;
+    if st.capture.is_some() {
+        return Err("采集中，请先停止".into());
+    }
+    let settings = st.settings.clone();
+    let (cmd_tx, _cmd_rx) = mpsc::channel(); // 预览模式无控制命令
+    let stop = Arc::new(AtomicBool::new(false));
+    let state_label = Arc::new(Mutex::new("PREVIEW".to_string()));
+    let join = {
+        let stop2 = Arc::clone(&stop);
+        std::thread::Builder::new()
+            .name("capture".into())
+            .spawn(move || {
+                if let Err(e) = run_preview_inner(&settings, &channel, &stop2) {
+                    emit(&channel, &CaptureEvent::Error { message: e });
+                }
+            })
+            .map_err(|e| format!("启动预览线程失败: {e}"))?
+    };
+    st.capture = Some(CaptureHandle {
+        stop,
+        cmd_tx,
+        state_label,
+        join: Some(join),
+    });
+    Ok(())
+}
+
+/// 对焦预览循环：仅读帧 + 预览/帧率遥测，无任何检测与落盘。
+fn run_preview_inner(
+    settings: &AppSettings,
+    channel: &Channel<serde_json::Value>,
+    stop: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let (w, h, fps) = (
+        settings.capture_width as usize,
+        settings.capture_height as usize,
+        settings.capture_fps,
+    );
+    let mut source = FfmpegUvcSource::new(&settings.camera_name, w, h, fps)?;
+    let preview_stride = ((fps / PREVIEW_FPS) + 0.5).max(1.0) as u64;
+    let telemetry_stride = ((fps / 10.0) + 0.5).max(1.0) as u64;
+    let t0 = Instant::now();
+    let mut n_frames = 0u64;
+    let mut telem_mark = (0u64, t0);
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let (idx, _ts, sbs) = match source.next_frame() {
+            Ok(f) => f,
+            Err(e) => return Err(e),
+        };
+        n_frames += 1;
+        if idx % preview_stride == 0 {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&sbs.data[..]);
+            emit(
+                channel,
+                &CaptureEvent::Preview {
+                    width: sbs.width as u32,
+                    height: sbs.height as u32,
+                    gray_b64: b64,
+                },
+            );
+        }
+        if idx % telemetry_stride == 0 {
+            let now = Instant::now();
+            let (last_n, last_t) = telem_mark;
+            let dt = now.duration_since(last_t).as_secs_f64();
+            let measured_fps = if dt > 0.0 {
+                (n_frames - last_n) as f64 / dt
+            } else {
+                0.0
+            };
+            telem_mark = (n_frames, now);
+            emit(
+                channel,
+                &CaptureEvent::Telemetry {
+                    fps: measured_fps,
+                    presence_ratio: 0.0,
+                    motion_ratio: 0.0,
+                    state: "PREVIEW".into(),
+                },
+            );
+        }
+    }
+    source.close();
     Ok(())
 }
 

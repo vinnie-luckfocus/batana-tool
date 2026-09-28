@@ -61,7 +61,9 @@ fn default_countdown() -> f64 {
     3.0
 }
 fn default_buffer_seconds() -> f64 {
-    3.0
+    // 须容纳 pre_roll(1s) + 挥棒全程(~1.5s) + post_roll(1s) 并留余量；
+    // 3s 在 120fps 下片头必被截断（实测复现）。5s ≈ 600 帧 × 双目 1MB ≈ 600MB 内存
+    5.0
 }
 fn default_true() -> bool {
     true
