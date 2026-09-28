@@ -12,7 +12,7 @@ export interface VideoDevice {
 
 // ---- 采集事件（capture/mod.rs CaptureEvent，serde tag="type" snake_case） ----
 export type CaptureEvent =
-  | { type: "preview"; width: number; height: number; rgba: number[] | ArrayBuffer }
+  | { type: "preview"; width: number; height: number; gray_b64: string }
   | { type: "telemetry"; fps: number; presence_ratio: number; motion_ratio: number; state: SmStateName }
   | { type: "state_changed"; prev: SmStateName; next: SmStateName; reason: string; seq: number | null }
   | { type: "clip_saved"; session_id: string; seq: number; dir: string; frame_count: number }

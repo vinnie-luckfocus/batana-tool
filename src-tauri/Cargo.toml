@@ -21,3 +21,9 @@ window-vibrancy = "0.6"
 # 视频 sha256（契约可选字段）与 ULID 随机数；均已存在于 Cargo.lock
 sha2 = "0.10"
 getrandom = "0.3"
+base64 = "0.22"
+
+# 采集热路径（逐字节转换/组帧/拷贝）在 debug 默认 opt-level=0 下慢一个量级，
+# 实测吞吐仅 ~63fps 且预览延迟持续增长；本 crate 单独提速（依赖仍快速编译）
+[profile.dev.package.batana-tool]
+opt-level = 2

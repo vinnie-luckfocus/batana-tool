@@ -2,10 +2,10 @@
 //! 语义对齐 Python 版 app/capture/ffmpeg_source.py。
 //!
 //! 帧读取：ffmpeg 输出 rawvideo（yuyv422，每帧 width*height*2 字节）到管道，
-//! 偶数字节即亮度 Y，直接得到 MONO8 灰度帧。
+//! 每像素组首字节即亮度 Y，直接得到 MONO8 灰度帧。
 //!
-//! 与 Python 版的差异：Rust std 无 select/poll，改为独立读线程 + mpsc 通道，
-//! read_exact 以 recv_timeout 实现整体 10s 超时（超时按断流处理）。
+//! 与 Python 版的差异：Rust std 无 select/poll，改为独立读线程组帧后经 mpsc 整帧转发，
+//! recv_timeout 实现整体 10s 超时（超时按断流处理）。
 
 use std::io::Read;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
@@ -36,7 +36,6 @@ pub struct FfmpegUvcSource {
     child: Child,
     stderr: Option<ChildStderr>,
     rx: mpsc::Receiver<std::io::Result<Vec<u8>>>,
-    pending: Vec<u8>,
     primed: Option<Vec<u8>>,
     idx: u64,
 }
@@ -76,18 +75,25 @@ impl FfmpegUvcSource {
 
         let stdout: ChildStdout = child.stdout.take().expect("stdout 已管道化");
         let (tx, rx) = mpsc::channel();
-        // 读线程：阻塞读管道，分块转发；EOF/出错后通道断开
+        // 读线程：阻塞读管道，组帧后整帧转发（避免消费端逐块 drain/collect 的额外拷贝）；
+        // EOF/出错后通道断开
         thread::Builder::new()
             .name("ffmpeg-reader".into())
             .spawn(move || {
                 let mut stdout = stdout;
-                let mut buf = vec![0u8; 256 * 1024];
+                let mut frame = vec![0u8; frame_bytes];
+                let mut filled = 0usize;
                 loop {
-                    match stdout.read(&mut buf) {
+                    match stdout.read(&mut frame[filled..]) {
                         Ok(0) => break,
                         Ok(n) => {
-                            if tx.send(Ok(buf[..n].to_vec())).is_err() {
-                                break; // 接收方已退出（停止采集）
+                            filled += n;
+                            if filled == frame_bytes {
+                                if tx.send(Ok(std::mem::take(&mut frame))).is_err() {
+                                    break; // 接收方已退出（停止采集）
+                                }
+                                frame = vec![0u8; frame_bytes];
+                                filled = 0;
                             }
                         }
                         Err(e) => {
@@ -108,12 +114,11 @@ impl FfmpegUvcSource {
             child,
             stderr: None,
             rx,
-            pending: Vec::new(),
             primed: None,
             idx: 0,
         };
         src.stderr = src.child.stderr.take();
-        let first = src.read_exact(frame_bytes);
+        let first = src.recv_frame();
         if first.len() < frame_bytes {
             return Err(src.fail(&format!(
                 "ffmpeg 未能打开设备 {device:?} 或模式 {width}x{height}@{fps:.0} 不被支持"
@@ -128,21 +133,12 @@ impl FfmpegUvcSource {
         cfg!(target_os = "macos") && find_in_path("ffmpeg").is_some()
     }
 
-    /// 读满 n 字节；超时或断流返回短缓冲（调用方按失败处理）。
-    fn read_exact(&mut self, n: usize) -> Vec<u8> {
-        let deadline = Instant::now() + READ_TIMEOUT;
-        while self.pending.len() < n {
-            let remain = deadline.saturating_duration_since(Instant::now());
-            if remain.is_zero() {
-                break;
-            }
-            match self.rx.recv_timeout(remain) {
-                Ok(Ok(chunk)) => self.pending.extend_from_slice(&chunk),
-                Ok(Err(_)) | Err(_) => break, // 读线程出错 / 超时 / EOF 断流
-            }
+    /// 收一整帧；超时/断流/读线程出错返回空缓冲（调用方按失败处理）。
+    fn recv_frame(&mut self) -> Vec<u8> {
+        match self.rx.recv_timeout(READ_TIMEOUT) {
+            Ok(Ok(frame)) => frame,
+            _ => Vec::new(),
         }
-        let take = n.min(self.pending.len());
-        self.pending.drain(..take).collect()
     }
 
     /// 先终止进程再读 stderr，否则进程存活时 stderr 读取永久阻塞。
@@ -167,7 +163,7 @@ impl FfmpegUvcSource {
         let buf = match self.primed.take() {
             Some(b) => b,
             None => {
-                let b = self.read_exact(self.frame_bytes);
+                let b = self.recv_frame();
                 if b.len() < self.frame_bytes {
                     return Err(self.fail("采集中断（设备可能已断开）"));
                 }
@@ -195,12 +191,11 @@ impl Drop for FfmpegUvcSource {
     }
 }
 
-/// yuyv422 原始字节 → MONO8（取偶数字节 Y 通道）。
+/// yuyv422 原始字节 → MONO8（取每像素组首字节 Y 通道）。
 pub fn yuyv_to_gray(buf: &[u8], width: usize, height: usize) -> GrayFrame {
     let mut data = Vec::with_capacity(width * height);
-    for y in 0..height {
-        let row = &buf[y * width * 2..(y + 1) * width * 2];
-        data.extend(row.iter().step_by(2));
+    for row in buf.chunks_exact(width * 2) {
+        data.extend(row.chunks_exact(2).map(|px| px[0]));
     }
     GrayFrame::new(width, height, data)
 }

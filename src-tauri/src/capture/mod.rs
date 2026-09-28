@@ -35,9 +35,6 @@ pub type Roi = (usize, usize, usize, usize);
 
 /// 预览降频目标（PRD：120fps 流下预览 30fps 显示）
 const PREVIEW_FPS: f64 = 30.0;
-/// 预览分辨率（左目缩略图）
-const PREVIEW_W: usize = 320;
-const PREVIEW_H: usize = 200;
 
 /// 灰度帧（MONO8）。data 用 Arc 共享，环形缓冲/片段提取克隆零拷贝。
 #[derive(Debug, Clone)]
@@ -111,8 +108,9 @@ pub fn split_sbs(frame: &GrayFrame) -> Result<(GrayFrame, GrayFrame), String> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CaptureEvent {
-    /// 预览帧：左目 320x200 RGBA 原始字节（已降频 ≤30fps）
-    Preview { width: u32, height: u32, rgba: Vec<u8> },
+    /// 预览帧：左目原生分辨率灰度（MONO8）base64（已降频 ≤30fps）
+    /// 用 base64 而非字节数组：serde_json 数字数组序列化是采集主循环的最大开销
+    Preview { width: u32, height: u32, gray_b64: String },
     /// 遥测：实测帧率 / 就位占比(0-1) / 运动占比(0-1) / 状态名
     Telemetry {
         fps: f64,
@@ -370,6 +368,7 @@ fn run_capture_inner(
     let telemetry_stride = ((fps / 10.0) + 0.5).max(1.0) as u64;
     let t0 = Instant::now();
     let mut n_frames = 0u64;
+    let mut telem_mark = (0u64, t0);
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -412,25 +411,30 @@ fn run_capture_inner(
         sm.feed_frame(idx, ts_ns, left.clone(), right);
 
         n_frames += 1;
-        let elapsed = t0.elapsed().as_secs_f64();
-        let measured_fps = if elapsed > 0.0 {
-            n_frames as f64 / elapsed
-        } else {
-            0.0
-        };
 
         if idx % preview_stride == 0 {
-            let (pw, ph, rgba) = preview_rgba(&left);
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&left.data[..]);
             emit(
                 channel,
                 &CaptureEvent::Preview {
-                    width: pw,
-                    height: ph,
-                    rgba,
+                    width: left.width as u32,
+                    height: left.height as u32,
+                    gray_b64: b64,
                 },
             );
         }
         if idx % telemetry_stride == 0 {
+            // 滑窗帧率：自上次遥测以来的真实速率（累计均值会被启动延迟长期拉低）
+            let now = Instant::now();
+            let (last_n, last_t) = telem_mark;
+            let dt = now.duration_since(last_t).as_secs_f64();
+            let measured_fps = if dt > 0.0 {
+                (n_frames - last_n) as f64 / dt
+            } else {
+                0.0
+            };
+            telem_mark = (n_frames, now);
             emit(
                 channel,
                 &CaptureEvent::Telemetry {
@@ -448,20 +452,6 @@ fn run_capture_inner(
     source.close();
     let _ = saver.join();
     Ok(())
-}
-
-/// 左目灰度 → 320x200 RGBA 缩略图（最近邻采样）。
-fn preview_rgba(frame: &GrayFrame) -> (u32, u32, Vec<u8>) {
-    let mut rgba = Vec::with_capacity(PREVIEW_W * PREVIEW_H * 4);
-    for y in 0..PREVIEW_H {
-        let sy = y * frame.height / PREVIEW_H;
-        for x in 0..PREVIEW_W {
-            let sx = x * frame.width / PREVIEW_W;
-            let v = frame.at(sx, sy);
-            rgba.extend_from_slice(&[v, v, v, 255]);
-        }
-    }
-    (PREVIEW_W as u32, PREVIEW_H as u32, rgba)
 }
 
 // ---- Tauri 命令 ----
@@ -595,12 +585,24 @@ mod tests {
     }
 
     #[test]
-    fn preview_rgba_dimensions() {
-        let frame = GrayFrame::new(1280, 400, vec![128; 1280 * 400]);
-        let (w, h, rgba) = preview_rgba(&frame);
-        assert_eq!((w, h), (320, 200));
-        assert_eq!(rgba.len(), 320 * 200 * 4);
-        assert_eq!(&rgba[..4], &[128, 128, 128, 255]);
+    fn preview_event_carries_native_gray_b64() {
+        use base64::Engine;
+        let frame = GrayFrame::new(640, 400, vec![128; 640 * 400]);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&frame.data[..]);
+        let v = serde_json::to_value(&CaptureEvent::Preview {
+            width: frame.width as u32,
+            height: frame.height as u32,
+            gray_b64: b64.clone(),
+        })
+        .unwrap();
+        assert_eq!(v["type"], "preview");
+        assert_eq!(v["width"], 640);
+        assert_eq!(v["height"], 400);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(v["gray_b64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded.len(), 640 * 400);
+        assert!(decoded.iter().all(|&b| b == 128));
     }
 
     #[test]

@@ -20,8 +20,9 @@ import type { AppContext, Page } from "./app";
 
 type ViewMode = "left" | "right" | "sbs";
 
-const PREVIEW_W = 320;
-const PREVIEW_H = 200;
+/** 首帧到达前的画布占位尺寸（左目原生分辨率，1280x400 SBS → 640x400） */
+const DEFAULT_FW = 640;
+const DEFAULT_FH = 400;
 /** 运动占比细条满格 = 10%（对齐旧版 MiniBar 量纲） */
 const METER_MAX_PCT = 10;
 
@@ -173,19 +174,27 @@ export function createCapturePage(_ctx: AppContext): Page {
   }
 
   // ---- 预览渲染 ----
+  function frameSize(): { w: number; h: number } {
+    return latestFrame
+      ? { w: latestFrame.width, h: latestFrame.height }
+      : { w: DEFAULT_FW, h: DEFAULT_FH };
+  }
+
   function syncCanvasSize(): void {
-    const w = viewMode === "sbs" ? PREVIEW_W * 2 : PREVIEW_W;
-    if (previewCv.width !== w) {
+    const { w: fw, h: fh } = frameSize();
+    const w = viewMode === "sbs" ? fw * 2 : fw;
+    if (previewCv.width !== w || previewCv.height !== fh) {
       previewCv.width = w;
-      previewCv.height = PREVIEW_H;
+      previewCv.height = fh;
       // overlay 与预览同一坐标系（均经 object-fit: contain 等比显示，letterbox 一致）
       overlayCv.width = w;
-      overlayCv.height = PREVIEW_H;
+      overlayCv.height = fh;
     }
   }
 
   function render(): void {
     syncCanvasSize();
+    const { w: fw, h: fh } = frameSize();
     const g = previewCv.getContext("2d")!;
     if (viewMode === "right") {
       g.fillStyle = "#2a2a2c";
@@ -193,17 +202,17 @@ export function createCapturePage(_ctx: AppContext): Page {
       g.fillStyle = "rgba(255,255,255,0.35)";
       g.font = "12px -apple-system, sans-serif";
       g.textAlign = "center";
-      g.fillText("预览流仅含左目，右目不可用", previewCv.width / 2, PREVIEW_H / 2);
+      g.fillText("预览流仅含左目，右目不可用", previewCv.width / 2, fh / 2);
     } else if (latestFrame) {
       const img = new ImageData(latestFrame.data, latestFrame.width, latestFrame.height);
       g.putImageData(img, 0, 0);
       if (viewMode === "sbs") {
         g.fillStyle = "#2a2a2c";
-        g.fillRect(PREVIEW_W, 0, PREVIEW_W, PREVIEW_H);
+        g.fillRect(fw, 0, fw, fh);
         g.fillStyle = "rgba(255,255,255,0.35)";
         g.font = "12px -apple-system, sans-serif";
         g.textAlign = "center";
-        g.fillText("右目", PREVIEW_W + PREVIEW_W / 2, PREVIEW_H / 2);
+        g.fillText("右目", fw + fw / 2, fh / 2);
       }
     } else {
       g.fillStyle = "#000";
@@ -392,10 +401,17 @@ export function createCapturePage(_ctx: AppContext): Page {
     const ev = raw as CaptureEvent;
     switch (ev.type) {
       case "preview": {
-        const data: Uint8ClampedArray<ArrayBuffer> =
-          ev.rgba instanceof ArrayBuffer
-            ? new Uint8ClampedArray(ev.rgba)
-            : new Uint8ClampedArray(ev.rgba as number[]);
+        // 灰度 base64 → RGBA（单色三通道同值，alpha 不透明）
+        const bin = atob(ev.gray_b64);
+        const n = bin.length;
+        const data = new Uint8ClampedArray(n * 4);
+        for (let i = 0, j = 0; i < n; i++, j += 4) {
+          const v = bin.charCodeAt(i);
+          data[j] = v;
+          data[j + 1] = v;
+          data[j + 2] = v;
+          data[j + 3] = 255;
+        }
         latestFrame = { data, width: ev.width, height: ev.height };
         render();
         break;
