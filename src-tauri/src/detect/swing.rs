@@ -29,6 +29,11 @@ pub struct SwingDetector {
     pub release_ratio: f64,
     pre_roll_frames: u64,
     post_roll_frames: u64,
+    /// 触发确认：连续 over 阈值帧数（防 ARMED 入口的收势/调节姿态毛刺误触发）。
+    /// 真挥棒 2%+ 会持续数十帧；毛刺通常 1-2 帧
+    sustain_needed: u64,
+    sustain: u64,
+    sustain_start: i64,
     prev: Option<Vec<u8>>,
     active: bool,
     trigger_idx: i64,
@@ -56,6 +61,10 @@ impl SwingDetector {
             release_ratio,
             pre_roll_frames: ((pre_roll_seconds * fps) + 0.5).max(0.0) as u64,
             post_roll_frames: ((post_roll_seconds * fps) + 0.5).max(1.0) as u64,
+            // 25ms 持续确认（120fps ≈ 3 帧；低帧率下至少 1 帧保持原语义）
+            sustain_needed: ((0.025 * fps) + 0.5).max(1.0) as u64,
+            sustain: 0,
+            sustain_start: -1,
             prev: None,
             active: false,
             trigger_idx: -1,
@@ -101,10 +110,21 @@ impl SwingDetect for SwingDetector {
         self.last_energy = energy;
         if !self.active {
             if ratio > self.trigger_ratio {
-                self.active = true;
-                self.trigger_idx = frame_idx as i64;
-                self.quiet = 0;
-                return SwingEvent::Started;
+                // 持续帧确认：毛刺（1-2 帧超阈）不触发；run 起点记为触发帧，
+                // 保证 pre_roll 覆盖到运动真正的起点之前
+                if self.sustain == 0 {
+                    self.sustain_start = frame_idx as i64;
+                }
+                self.sustain += 1;
+                if self.sustain >= self.sustain_needed {
+                    self.active = true;
+                    self.trigger_idx = self.sustain_start;
+                    self.quiet = 0;
+                    self.sustain = 0;
+                    return SwingEvent::Started;
+                }
+            } else {
+                self.sustain = 0;
             }
             return SwingEvent::None;
         }
@@ -146,6 +166,8 @@ impl SwingDetect for SwingDetector {
         self.active = false;
         self.trigger_idx = -1;
         self.quiet = 0;
+        self.sustain = 0;
+        self.sustain_start = -1;
         self.last_ratio = 0.0;
         self.last_energy = 0.0;
     }
@@ -281,5 +303,28 @@ mod tests {
         let det = SwingDetector::new(ROI, 120.0, 25.0, 0.02, 0.008, 1.0, 1.0);
         assert_eq!(det.pre_roll_frames(), 120);
         assert_eq!(det.post_roll_frames, 120);
+    }
+
+    #[test]
+    fn swing_trigger_requires_sustained_motion() {
+        // 120fps → sustain_needed = 3 帧：单帧毛刺不触发，连续 3 帧才触发，
+        // 且触发帧记为连续段起点（pre_roll 才能覆盖运动起点之前）
+        let mut det = SwingDetector::new(ROI, 120.0, 25.0, 0.02, 0.008, 1.0, 1.0);
+        let base = empty_frame();
+        det.update(&base, 0);
+        // 单帧毛刺（7.8% 远超 2%）不触发
+        let spike = energy_frame(&base, 784, 0, 255);
+        assert_eq!(det.update(&spike, 1), SwingEvent::None);
+        assert!(!det.active());
+        // 毛刺保持一帧（帧差 0，sustain 清零）
+        assert_eq!(det.update(&spike, 2), SwingEvent::None);
+        // 连续 3 帧超阈（每帧 300px ≈ 3%）→ 第三帧触发，trigger_idx = 连续段起点
+        let m1 = energy_frame(&spike, 300, 800, 255);
+        let m2 = energy_frame(&m1, 300, 1200, 255);
+        let m3 = energy_frame(&m2, 300, 800, 0);
+        assert_eq!(det.update(&m1, 3), SwingEvent::None);
+        assert_eq!(det.update(&m2, 4), SwingEvent::None);
+        assert_eq!(det.update(&m3, 5), SwingEvent::Started);
+        assert_eq!(det.trigger_idx(), 3);
     }
 }

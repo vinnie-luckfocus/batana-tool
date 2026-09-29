@@ -100,6 +100,10 @@ pub struct CaptureStateMachine {
     ready_elapsed: u64,
     countdown_next: i64,
     trigger_idx: i64,
+    /// ARMED 入口宽限（忽略到此帧号为止的挥棒触发）：倒计时刚结束时用户仍在
+    /// 收势/调整姿态，实测这类动作会瞬间超阈误触发，导致片段在"请挥棒"话音
+    /// 结束前就已关闭，真正的挥棒落在片段之外
+    armed_grace_until: i64,
 }
 
 impl CaptureStateMachine {
@@ -128,7 +132,13 @@ impl CaptureStateMachine {
             ready_elapsed: 0,
             countdown_next: 0,
             trigger_idx: -1,
+            armed_grace_until: -1,
         }
+    }
+
+    /// ARMED 入口宽限帧数（0.3s）
+    fn armed_grace_frames(&self) -> u64 {
+        ((0.3 * self.fps) + 0.5) as u64
     }
 
     // ---- 外部接口 ----
@@ -181,13 +191,26 @@ impl CaptureStateMachine {
                     if tick < self.countdown_next {
                         self.countdown_next = tick;
                         self.speak(&tick.to_string(), 0);
+                        if tick == 1 {
+                            // 「请挥棒」提前到最后一个节拍播出：say 启动+播报约 1s，
+                            // 使其结束点落在 ARMED 入口附近，用户闻声挥棒即被记录
+                            self.speak(PROMPT_SWING, 0);
+                        }
                     }
                     return;
                 }
-                self.speak(PROMPT_SWING, 0);
+                self.armed_grace_until = frame_idx as i64 + self.armed_grace_frames() as i64;
                 self.transition(SmState::Armed, "countdown_done", None);
             }
             SmState::Armed => {
+                if (frame_idx as i64) < self.armed_grace_until {
+                    // 宽限期：完全不喂检测器（用户在收势/调整姿态）
+                    return;
+                }
+                if (frame_idx as i64) == self.armed_grace_until {
+                    // 宽限结束，检测器从干净基线重新开始（帧差 prev 清零）
+                    self.swing.reset();
+                }
                 if self.swing.update(&left, frame_idx) == SwingEvent::Started {
                     self.trigger_idx = self.swing.trigger_idx();
                     self.transition(SmState::Swing, "swing_started", None);
@@ -734,6 +757,19 @@ mod tests {
         // trigger=12，pre_roll=8 → 期望 4，但容量 10 的缓冲只覆盖 [6,15]，钳到 6
         assert_eq!(clip.start_idx, 6);
         assert_eq!(*n_frames, 10); // 受缓冲容量限制
+    }
+
+    #[test]
+    fn armed_grace_defers_early_trigger() {
+        // countdown 1s → ARMED 于 frame 10；宽限 0.3s*10fps = 3 帧（frame 10-12 不喂检测器）
+        // FakeSwing start_at=11 落在宽限期内：触发延迟到宽限结束帧 13，片段仍完整产出
+        let (mut sm, p, _, _, _, saved) = build(FakeSwing::new(2, Some(11), Some(30)), 1.0, false);
+        p.lock().unwrap().set(true);
+        feed(&mut sm, 0, 40);
+        let saved = saved.lock().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].0.trigger_idx, 13);
+        assert_eq!(saved[0].0.end_idx, 30);
     }
 
     #[test]
