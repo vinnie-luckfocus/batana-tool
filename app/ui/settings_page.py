@@ -126,14 +126,6 @@ class SettingsPage(QWidget):
         self.spin_buffer.setDecimals(1)
         form.addRow(label("预录缓冲（秒）"), self.spin_buffer)
 
-        form.addRow(SectionHeader("语音"))
-        self.chk_voice = QCheckBox("启用语音引导")
-        form.addRow(label("语音开关"), self.chk_voice)
-        self.spin_rate = QSpinBox()
-        self.spin_rate.setRange(80, 400)
-        self.spin_rate.setSingleStep(10)
-        form.addRow(label("语速（词/分）"), self.spin_rate)
-
         form.addRow(SectionHeader("存储"))
         dir_row = QHBoxLayout()
         self.edit_root = QLineEdit()
@@ -259,8 +251,6 @@ class SettingsPage(QWidget):
         self.spin_pre.setValue(s.pre_roll_seconds)
         self.spin_post.setValue(s.post_roll_seconds)
         self.spin_buffer.setValue(s.buffer_seconds)
-        self.chk_voice.setChecked(s.voice_enabled)
-        self.spin_rate.setValue(s.voice_rate)
         self.edit_root.setText(s.storage_root)
         self.edit_pose_model.setText(s.pose_model_path)
         self.spin_env_bright_fail.setValue(s.env_brightness_fail)
@@ -311,8 +301,6 @@ class SettingsPage(QWidget):
         s.pre_roll_seconds = float(self.spin_pre.value())
         s.post_roll_seconds = float(self.spin_post.value())
         s.buffer_seconds = float(self.spin_buffer.value())
-        s.voice_enabled = self.chk_voice.isChecked()
-        s.voice_rate = int(self.spin_rate.value())
         s.storage_root = self.edit_root.text().strip() or s.storage_root
         s.pose_model_path = self.edit_pose_model.text().strip()
         s.core_repo_path = self.edit_core_repo.text().strip()

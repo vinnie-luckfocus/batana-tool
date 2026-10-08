@@ -20,6 +20,9 @@ VIEW_LEFT = "left"
 VIEW_RIGHT = "right"
 VIEW_SBS = "sbs"
 
+# 提示类型（与 app/ui/cues.py 的 CUE_* 对应；preview 不依赖 cues 模块保持轻耦合）
+_CUE_KINDS = ("countdown", "armed", "swing", "saved", "warn")
+
 
 def gray_to_qimage(frame: np.ndarray) -> QImage:
     """MONO8 灰度帧 → QImage（拷贝持有，与 numpy 缓冲解耦）。"""
@@ -119,6 +122,21 @@ class PreviewWidget(FrameView):
         self._roi: RoiTuple | None = None
         self._drag_start: tuple[float, float] | None = None
         self._drag_current: tuple[float, float] | None = None
+        # 采集引导视觉提示（倒计时/挥棒/录制中/已保存/告警），None 表示无
+        self._cue: tuple[str, str] | None = None
+
+    # ---- 采集引导视觉提示 ----
+
+    def set_cue(self, text: str, kind: str) -> None:
+        """显示大号引导提示；text 为空则清除。kind 见 app/ui/cues.py CUE_*。"""
+        if not text:
+            self._cue = None
+        elif kind in _CUE_KINDS:
+            self._cue = (text, kind)
+        self.update()
+
+    def cue(self) -> tuple[str, str] | None:
+        return self._cue
 
     # ---- 数据源 ----
 
@@ -216,6 +234,77 @@ class PreviewWidget(FrameView):
         roi = self._drag_rect() if self._drag_start is not None else self._roi
         if roi is not None:
             self._draw_roi(painter, roi)
+        # 采集引导视觉提示（最顶层，用户注视点即画面中心）
+        if self._cue is not None:
+            self._draw_cue(painter)
+
+    def _draw_cue(self, painter: QPainter) -> None:
+        text, kind = self._cue
+        rect = self._content if not self._content.isEmpty() else QRectF(self.rect())
+        cx = rect.center().x()
+        cy = rect.center().y()
+
+        def halo_font(px: int) -> None:
+            painter.setFont(ui_font(px, bold=True))
+
+        def draw_centered(t: str, color: QColor, px: int, dy: float = 0.0) -> None:
+            halo_font(px)
+            metrics = painter.fontMetrics()
+            w = metrics.horizontalAdvance(t)
+            h = metrics.height()
+            x, y = cx - w / 2, cy + dy
+            # 深色光晕底板保证任何画面下可读
+            halo = QColor(0, 0, 0, 110)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(halo)
+            pad_x, pad_y = px * 0.5, px * 0.35
+            painter.drawRoundedRect(
+                QRectF(x - pad_x, y - h / 2 - pad_y, w + pad_x * 2, h + pad_y * 2), 12, 12
+            )
+            painter.setPen(color)
+            painter.drawText(QRectF(x, y - h / 2, w, h), Qt.AlignmentFlag.AlignCenter, t)
+
+        if kind == "armed":
+            # 绿色粗描边 + 超大字，持续到挥棒开始——闻"色"即挥
+            green = semantic_color("green")
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(green, 8))
+            painter.drawRect(rect.adjusted(4, 4, -4, -4))
+            draw_centered(text, green, max(48, int(rect.height() * 0.28)))
+        elif kind == "swing":
+            # 录制中：红色描边 + 顶部标记（不遮挡画面中心动作区）
+            red = semantic_color("red")
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(red, 6))
+            painter.drawRect(rect.adjusted(3, 3, -3, -3))
+            halo_font(22)
+            metrics = painter.fontMetrics()
+            w = metrics.horizontalAdvance(text)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 110))
+            painter.drawRoundedRect(
+                QRectF(cx - w / 2 - 14, rect.top() + 10, w + 28, metrics.height() + 16), 10, 10
+            )
+            painter.setPen(red)
+            painter.drawText(
+                QRectF(cx - w / 2, rect.top() + 18, w, metrics.height()),
+                Qt.AlignmentFlag.AlignCenter, text,
+            )
+        elif kind == "saved":
+            # 已保存：整屏绿色闪 + 大字（短暂显示，由调用方定时清除）
+            green = semantic_color("green")
+            flash = QColor(green)
+            flash.setAlpha(70)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(flash)
+            painter.drawRect(rect)
+            draw_centered(text, green, max(40, int(rect.height() * 0.22)))
+        elif kind == "countdown":
+            # 倒计时：超大数字（约占画面高 55%）
+            draw_centered(text, QColor(255, 255, 255), max(64, int(rect.height() * 0.55)))
+        else:  # warn
+            orange = semantic_color("orange")
+            draw_centered(text, orange, max(36, int(rect.height() * 0.20)))
 
     def _draw_roi(self, painter: QPainter, roi: RoiTuple) -> None:
         x, y, w, h = roi

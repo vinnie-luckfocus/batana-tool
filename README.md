@@ -4,18 +4,18 @@
 
 # batana-tool — batana-core 素材采集与标注工具
 
-MacBook + Type-C USB3 双目模组的挥棒素材生产工具：人站上打击区自动识别，语音引导挥棒，自动分段保存；配套骨架叠加审核、手动修正、修剪与契约格式导出。完整需求见 [docs/prd.md](docs/prd.md)。
+MacBook + Type-C USB3 双目模组的挥棒素材生产工具：人站上打击区自动识别，预览画面大号视觉引导挥棒，自动分段保存；配套骨架叠加审核、手动修正、修剪与契约格式导出。完整需求见 [docs/prd.md](docs/prd.md)。
 
 ## 定位
 
 - **服务对象**：batana-core 模型训练素材生产（M1.5：≥200 段标注挥棒视频）
 - **采集硬件**：Type-C USB3 双目整模组（OV9281，2560×800 side-by-side，120fps 无压缩），MacBook 架设于打击区旁
-- **自动化目标**：采集人只需挥棒；就位检测、语音引导、挥棒分段、保存、编号全自动
+- **自动化目标**：采集人只需挥棒；就位检测、视觉引导（倒计时数字→「挥棒！」→「录制中」→「已保存」绿闪）、挥棒分段、保存、编号全自动
 
 ## 功能（v0.1–v0.3 路线）
 
 - F1 双目采集（UVC/左右目切分/无损存储/逐帧时间戳）
-- F2 打击区 ROI 配置 · F3 就位检测 · F4 中文语音引导 · F5 挥棒自动检测分段 · F6 采集会话管理
+- F2 打击区 ROI 配置 · F3 就位检测 · F4 视觉引导（预览画面大号提示，零延迟） · F5 挥棒自动检测分段 · F6 采集会话管理
 - F7 骨架自动标注（MediaPipe 33 点）· F8 骨架叠加审核与手动修正 · F9 片段修剪 · F10 审核标记与 session-schema 导出
 - F11 环境合规主动判定：采集前一键 ~10s 环境体检（光照/频闪/清晰度/背景/水平/构图/帧率/磁盘 8 项，逐项中文整改建议）+ 采集中光照频闪持续监测
 
@@ -25,7 +25,7 @@ MacBook + Type-C USB3 双目模组的挥棒素材生产工具：人站上打击�
 
 ## 技术栈
 
-PySide6 + OpenCV + MediaPipe · 语音走 macOS `say`（中文 Tingting）
+PySide6 + OpenCV + MediaPipe · 采集引导为预览画面大号视觉提示（无语音依赖，帧驱动零延迟）
 
 ## 使用说明
 
@@ -52,7 +52,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m app.main --source samples/output/synth_swing.mkv   # 视频文件回放演示（无相机）
 ```
 
-三页结构（顶部页签切换）：**采集页**（实时预览 ~30fps 降频、左/右/双目并排切换、ROI 拖拽框选持久化到 settings.json、状态机大字横幅与遥测、开始/暂停/手动挥棒/丢弃重拍/静音/相机源选择）、**审核页**（素材列表筛选、逐帧回放、骨架叠加与拖动修正/撤销/重跑单帧、修剪、三段式标记、合格素材批量导出+校验报告）、**设置页**（采集模式/检测阈值/pre-post-roll/语音/存储根目录）。
+三页结构（顶部页签切换）：**采集页**（实时预览 ~30fps 降频、左/右/双目并排切换、ROI 拖拽框选持久化到 settings.json、状态机大字横幅与遥测、预览中心视觉引导（倒计时/挥棒/录制中/已保存）、开始/暂停/手动挥棒/丢弃重拍/相机源选择）、**审核页**（素材列表筛选、逐帧回放、骨架叠加与拖动修正/撤销/重跑单帧、修剪、三段式标记、合格素材批量导出+校验报告）、**设置页**（采集模式/检测阈值/pre-post-roll/存储根目录）。
 
 界面为 macOS 原生风格设计系统（`app/ui/theme.py`，Apple HIG）：控件交给系统样式引擎渲染、浅色/深色跟随系统外观、系统语义色（绿=就绪、蓝=进行中、红=异常/挥棒提示）、半透明圆角卡片 + 0.5px 发丝描边 + 同向软阴影、顶部工具栏式分段控件、状态 pill 与通知式提醒横幅、数值读数用等宽数字字体（SF Mono → Menlo 回退）。真毛玻璃由 `app/ui/vibrancy.py` 提供：通过 PyObjC 在主窗口（underWindowBackground 材质）与环境体检对话框（popover 材质）背后嵌入 NSVisualEffectView，安装可选依赖 `pip install -e ".[vibrancy]"` 后生效；offscreen 测试或未安装 PyObjC 时自动回退为半透明 QSS 近似渲染（截图环境下无窗口服务器，真机上呈现真实模糊透光）。
 
@@ -60,7 +60,6 @@ python3.12 -m venv .venv
 
 - `app.capture`：`FrameSource` protocol（`frames() -> Iterator[(frame_idx, ts_ns, sbs_frame)]`）；`UvcSource`（UVC 采集，参数化分辨率/fps/像素格式）；`FileSource`（视频回放）；`split_sbs()`（SBS 对半切分）；`RingBuffer(seconds, fps)`（线程安全预录环缓冲，`extract(start_idx, end_idx)` 区间提取）；`ClipWriter(fps).write_clip(frames, out_dir, meta)`（FFV1/MKV 优先、mp4v 回退告警，同时写 `timestamps.csv` + `capture_meta.json`）
 - `app.detect`：`PresenceDetector(roi, fps, ...)`（MOG2 前景占比 + 稳定 N 帧判定就位/离场，就位后冻结背景模型）；`SwingDetector(roi, fps, pix_thresh, trigger/release_ratio, pre/post_roll)`（显著运动像素占比，底噪免疫，返回 `started`/`ended`）；`CaptureStateMachine(presence, swing, buffer, fps, voice=, clip_saver=)`（PRD F5 状态机 IDLE→READY→ARMED→SWING→SAVING→READY；`feed_frame()` 逐帧驱动；`add_listener()` 迁移回调供 UI 接信号；`manual_start/stop()` 手动兜底；`discard()` 丢弃重拍；`pause()/error()/recover()`）
-- `app.voice`：`Voice` protocol（`speak(text, priority)`）；`SayVoice`（macOS `say -v Tingting` 队列串行、可静音）；`NullVoice`（测试）；中文文案常量（PRD F4）
 - `app.pose`：`PoseFrame`/`Keypoint`（33 点契约拓扑，`correct()` 手动修正保留自动原值）；`write_pose2d()/read_pose2d()`；`PoseEstimator` protocol + `StubPoseEstimator`（确定性）+ `MediaPipePoseEstimator`（Tasks PoseLandmarker，需下载 `.task` 模型文件）
 - `app.session`：`SessionStore(root)`（index.json 原子落盘、三段式标记 合格/不合格/待复核、修剪、删除、`rebuild()` 崩溃重建、`counts()`）；`export_session(clip, out_root, pose_frames=, ...)`（产出契约目录）；`validate_session_builtin()`（内置必填校验）；`validate_with_core()`（本机存在 batana-core 时调其 `tools/validate_session.py` 全量校验）
 - `app.envcheck`（F11）：8 项纯函数检查（光照/频闪含 FFT 市电特征识别/清晰度/背景干扰/水平/构图/帧率掉帧/磁盘，阈值全参数化见 `defaults.py`）；`EnvironmentChecker(frame_source, roi, settings, report_root)`（`run(duration_s, progress_cb)` 采样并逐项检查，复用 FrameSource 抽象，报告 JSON 落盘 `env_reports/`）；无头 CLI `python -m app.envcheck --source <视频> --duration 10`
@@ -99,6 +98,7 @@ samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→�
 | --- | --- | --- | --- |
 | 0.1-draft | 2026-09-20 | 仓库创建，PRD v1.0 定稿（docs/prd.md） | 待同步司令塔 repos.yaml |
 | 0.1 | 2026-09-20 | 核心层实现：采集/检测/语音/姿态/会话导出 + 59 项无头测试 + 合成素材生成器（UI 页面待下一里程碑） | 待同步司令塔 repos.yaml |
+| 0.4 | 2026-10-08 | 语音引导全面改为预览画面大号视觉提示（倒计时数字/绿框「挥棒！」/红框「录制中」/绿闪「已保存」/告警大字）：实机取证证实 say 语音队列延迟导致挥棒落在片段外；同步移植 Tauri 期修复——挥棒触发持续帧确认（25ms）、ARMED 0.3s 宽限期、预录缓冲默认 3→5s；删除 app.voice 与静音/语速设置项，142 项测试全绿 | 待同步司令塔 repos.yaml |
 | 0.2 | 2026-09-20 | 桌面 UI：采集/审核/设置三页（战术遥测设计系统）、采集控制器线程信号桥、骨架叠加修正/修剪/标记/批量导出、UI 离屏冒烟 7 项（合计 66 项全绿） | 待同步司令塔 repos.yaml |
 | 0.3 | 2026-09-20 | F11 环境合规主动判定（PRD v1.1）：app/envcheck 8 项检查 + 体检执行器 + 无头 CLI，采集页 [ ENV CHECK ] 对话框、采集中光照/频闪持续监测横幅、设置页环境检查阈值区，新增 41 项无头测试（合计 107 项全绿） | 待同步司令塔 repos.yaml |
 | 0.3.1 | 2026-09-20 | UX 评审整改（docs/reviews/2026-09-20-ux-review.md，H1–H5/M1–M5/L1/L3–L5）：状态横幅中文化分色+视觉倒计时、审核标记后自动跳下一条待复核+跳触发帧+Shift 步进/Ctrl+Z、未保存确认、删除素材、启动 rebuild 恢复提示、异常区分相机/存储、落盘独立 worker 线程、骨架左/右/双目选择、ARMED 15s 未检测挥棒语音提示+能量阈值刻度、导出磁盘预检+后台线程进度+core 仓路径可配、ROI 引导回显、MJPEG 警告、采集快捷键（空格/D）、回放 0.25×/0.5× 慢放、重复导出注明覆盖、设置页磁盘占用估算；新增 18 项测试（合计 125 项全绿） | 待同步司令塔 repos.yaml |

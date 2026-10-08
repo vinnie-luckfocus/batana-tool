@@ -41,10 +41,9 @@ class AppSettings:
     pre_roll_seconds: float = 1.0
     post_roll_seconds: float = 1.0
     countdown_seconds: float = 3.0
-    buffer_seconds: float = 3.0
-    # F4 语音
-    voice_enabled: bool = True
-    voice_rate: int = 200  # say -r（词/分钟）
+    # 须容纳 pre_roll(1s) + 挥棒全程(~1.5s) + post_roll(1s) 并留余量；
+    # 3s 在 120fps 下片头必被环形缓冲截断（实机取证后的修复）
+    buffer_seconds: float = 5.0
     # F6 存储
     storage_root: str = DEFAULT_STORAGE_ROOT
     # F7 骨架（MediaPipe 模型文件路径；空 = 未配置，用 Stub）

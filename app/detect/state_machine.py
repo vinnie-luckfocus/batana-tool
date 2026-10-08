@@ -1,13 +1,12 @@
 """采集编排状态机（PRD F5）：IDLE→READY→ARMED→SWING→SAVING→READY 循环。
 
 纯 Python、无 Qt 依赖；事件驱动（feed_frame 逐帧喂入）；
-为 UI 集成预留 listener 回调与可选 Voice 播报。
+状态迁移经 listener 回调供 UI 层驱动视觉提示（无语音）。
 """
 
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
@@ -17,23 +16,13 @@ import numpy as np
 from app.capture.ring_buffer import RingBuffer
 from app.detect.presence import PresenceDetector
 from app.detect.swing import SwingDetector
-from app.voice.voice import (
-    PROMPT_DISCARDED,
-    PROMPT_LEFT,
-    PROMPT_READY,
-    PROMPT_SWING,
-    PROMPT_SWING_DONE,
-    Voice,
-    error_prompt,
-    prompt_saved,
-)
 
 log = logging.getLogger(__name__)
 
 
 class State(Enum):
     IDLE = "IDLE"      # 无人
-    READY = "READY"    # 就位，语音 + 倒计时
+    READY = "READY"    # 就位，倒计时
     ARMED = "ARMED"    # 待挥棒，预录中
     SWING = "SWING"    # 挥棒中
     SAVING = "SAVING"  # 落盘
@@ -86,7 +75,6 @@ class CaptureStateMachine:
         swing: SwingDetector,
         buffer: RingBuffer,
         fps: float,
-        voice: Voice | None = None,
         clip_saver: ClipSaver | None = None,
         countdown_seconds: float = 3.0,
     ) -> None:
@@ -94,7 +82,6 @@ class CaptureStateMachine:
         self.swing = swing
         self.buffer = buffer
         self.fps = float(fps)
-        self.voice = voice
         self.clip_saver = clip_saver
         self.countdown_frames = max(1, int(countdown_seconds * fps + 0.5))
         self.state = State.IDLE
@@ -103,8 +90,15 @@ class CaptureStateMachine:
         self.last_error: str | None = None
         self._listeners: list[TransitionListener] = []
         self._ready_elapsed = 0
-        self._countdown_next = 0
         self._trigger_idx = -1
+        # ARMED 入口宽限（忽略到此帧号为止的挥棒触发）：倒计时刚结束时用户仍在
+        # 收势/调整姿态，这类动作会瞬间超阈误触发，导致片段在挥棒前就关闭
+        self._armed_grace_until = -1
+
+    @property
+    def armed_grace_frames(self) -> int:
+        """ARMED 入口宽限帧数（0.3s）。"""
+        return int(0.3 * self.fps + 0.5)
 
     # ---- 外部接口 ----
 
@@ -121,16 +115,12 @@ class CaptureStateMachine:
         # 任意工作态人离开 → IDLE（SWING 中离开丢弃进行中片段）
         if not present and self.state in (State.READY, State.ARMED, State.SWING, State.SAVING):
             self.swing.reset()
-            self._speak(PROMPT_LEFT, priority=1)
             self._transition(State.IDLE, reason="presence_lost")
             return
 
         if self.state is State.IDLE:
             if present:
                 self._ready_elapsed = 0
-                # +1 使首个整秒 tick（如 "3"）在倒计时第一帧即播报
-                self._countdown_next = math.ceil(self.countdown_frames / self.fps) + 1
-                self._speak(PROMPT_READY)
                 self._transition(State.READY, reason="presence_settled")
             return
 
@@ -138,16 +128,16 @@ class CaptureStateMachine:
             self._ready_elapsed += 1
             remaining_s = (self.countdown_frames - self._ready_elapsed) / self.fps
             if remaining_s > 0:
-                tick = math.ceil(remaining_s)
-                if tick < self._countdown_next:
-                    self._countdown_next = tick
-                    self._speak(str(tick))
                 return
-            self._speak(PROMPT_SWING)
+            self._armed_grace_until = frame_idx + self.armed_grace_frames
             self._transition(State.ARMED, reason="countdown_done")
             return
 
         if self.state is State.ARMED:
+            if frame_idx < self._armed_grace_until:
+                return  # 宽限期：完全不喂检测器（用户在收势/调整姿态）
+            if frame_idx == self._armed_grace_until:
+                self.swing.reset()  # 宽限结束，检测器从干净基线重新开始
             if self.swing.update(left, frame_idx) == "started":
                 self._trigger_idx = self.swing.trigger_idx
                 self._transition(State.SWING, reason="swing_started")
@@ -186,7 +176,6 @@ class CaptureStateMachine:
             return
         self.swing.reset()
         self._trigger_idx = -1
-        self._speak(PROMPT_DISCARDED, priority=1)
         self._transition(State.READY, reason="discarded")
 
     def pause(self) -> None:
@@ -197,9 +186,8 @@ class CaptureStateMachine:
         self._transition(State.IDLE, reason="paused")
 
     def error(self, message: str) -> None:
-        """异常：任意态 → ERROR。语音按消息分类（相机断开 / 存储失败 / 通用）。"""
+        """异常：任意态 → ERROR（UI 经迁移事件与 error_prompt 分类显示）。"""
         self.last_error = message
-        self._speak(error_prompt(message), priority=2)
         self._transition(State.ERROR, reason=f"error: {message}")
 
     def recover(self) -> None:
@@ -228,7 +216,6 @@ class CaptureStateMachine:
         self.clips.append(clip)
         self._trigger_idx = -1
         self.swing.reset()
-        self._speak(PROMPT_SWING_DONE)
         self._transition(State.SAVING, reason=reason, clip=clip)
         try:
             if self.clip_saver is not None:
@@ -237,10 +224,8 @@ class CaptureStateMachine:
             self.clips.remove(clip)
             self.error(f"片段落盘失败: {e}")
             return
-        self._speak(prompt_saved(clip.seq))
         self._transition(State.READY, reason="saved", clip=clip)
         self._ready_elapsed = 0
-        self._countdown_next = math.ceil(self.countdown_frames / self.fps) + 1
 
     def _transition(self, next_state: State, reason: str, clip: Clip | None = None) -> None:
         prev = self.state
@@ -251,7 +236,3 @@ class CaptureStateMachine:
                 fn(event)
             except Exception:  # listener 异常不打断状态机
                 log.exception("状态机 listener 异常")
-
-    def _speak(self, text: str, priority: int = 0) -> None:
-        if self.voice is not None:
-            self.voice.speak(text, priority=priority)

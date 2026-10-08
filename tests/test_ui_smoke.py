@@ -27,8 +27,6 @@ from app.ui.main_window import MainWindow
 from app.ui.review_page import ReviewPage
 from app.ui.settings import AppSettings
 from app.ui.settings_page import SettingsPage
-from app.voice import NullVoice
-
 from conftest import FakePresence, FakeSwing, make_frame
 
 FPS = 10.0
@@ -48,7 +46,6 @@ def settings(tmp_path) -> AppSettings:
     s.capture_fps = FPS
     s.countdown_seconds = 0.2
     s.buffer_seconds = 3.0
-    s.voice_enabled = False  # 测试不出声
     return s
 
 
@@ -62,7 +59,6 @@ def _fake_controller(settings, store, **kwargs) -> CaptureController:
         settings, store,
         presence=kwargs.pop("presence", FakePresence()),
         swing=kwargs.pop("swing", FakeSwing()),
-        voice=NullVoice(),
         **kwargs,
     )
 

@@ -33,7 +33,6 @@ from app.envcheck import EnvCheckSettings, check_brightness, check_flicker
 from app.envcheck.models import CheckResult
 from app.session import SessionStore, new_session_id
 from app.ui.settings import AppSettings
-from app.voice import NullVoice, SayVoice, Voice, error_prompt
 
 PREVIEW_FPS = 30.0  # 预览降频目标（PRD：120fps 流下预览 30fps 显示）
 _ENV_SAMPLE_STRIDE = 4  # 持续环境监测：每 4 帧采一次亮度样本（120fps → 30 样本/秒）
@@ -190,14 +189,12 @@ class CaptureController(QObject):
         source: FrameSource | None = None,
         presence: PresenceDetector | None = None,
         swing: SwingDetector | None = None,
-        voice: Voice | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self.settings = settings
         self.store = store
         self._source = source
-        self._voice = voice if voice is not None else self._make_voice()
         self._writer = ClipWriter(fps=settings.capture_fps)
         self._lock = threading.Lock()
         self._thread: _CaptureThread | None = None
@@ -230,14 +227,6 @@ class CaptureController(QObject):
 
     # ---- 构造辅助 ----
 
-    def _make_voice(self) -> Voice:
-        if self.settings.voice_enabled:
-            try:
-                return SayVoice(rate=self.settings.voice_rate)
-            except Exception:
-                pass
-        return NullVoice()
-
     def _make_state_machine(
         self,
         fps: float,
@@ -260,7 +249,7 @@ class CaptureController(QObject):
         self._swing = swing
         sm = CaptureStateMachine(
             presence, swing, RingBuffer(s.buffer_seconds, fps), fps,
-            voice=self._voice, clip_saver=self._save_clip,
+            clip_saver=self._save_clip,
             countdown_seconds=s.countdown_seconds,
         )
         sm.add_listener(self.transitioned.emit)
@@ -286,10 +275,6 @@ class CaptureController(QObject):
     def detector_roi(self) -> Roi | None:
         """当前生效的检测 ROI（含首帧懒建的默认框），供预览回显。"""
         return self._detector_roi
-
-    def say(self, text: str, priority: int = 0) -> None:
-        """UI 层直接播报（如 ARMED 超时提醒），走与状态机同一 Voice。"""
-        self._voice.speak(text, priority=priority)
 
     # ---- 帧喂入（抓帧线程与无头测试共用） ----
 
@@ -410,9 +395,6 @@ class CaptureController(QObject):
             if self._sm is not None:
                 self._sm.discard()
 
-    def set_muted(self, muted: bool) -> None:
-        self._voice.set_muted(muted)
-
     def update_roi(self, roi: Roi) -> None:
         """ROI 框选变更：持久化到 settings.json，自建检测器时热更新状态机。"""
         with self._lock:
@@ -425,18 +407,15 @@ class CaptureController(QObject):
     def close(self) -> None:
         self.stop()
         self._save_worker.shutdown()
-        self._voice.close()
 
     # ---- 异常上报（抓帧线程 / 落盘 worker 共用入口） ----
 
     def _report_error(self, message: str) -> None:
-        """异常分类：状态机 ERROR（内部按消息分类语音播报）+ 通知 UI。"""
+        """异常：状态机转 ERROR + 通知 UI（视觉告警）。"""
         with self._lock:
             sm = self._sm
         if sm is not None and sm.state is not State.ERROR:
             sm.error(message)
-        elif sm is None:
-            self._voice.speak(error_prompt(message), priority=2)
         self.error_occurred.emit(message)
 
     # ---- 片段落盘（clip_saver，抓帧线程内调用；编码写盘在 worker 线程） ----

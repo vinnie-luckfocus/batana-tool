@@ -9,7 +9,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -25,6 +24,19 @@ from app.detect import State
 from app.envcheck import EnvCheckSettings, EnvironmentChecker
 from app.session import SessionStore
 from app.ui.controller import CaptureController, build_uvc_source
+from app.ui.cues import (
+    CUE_ARMED,
+    CUE_COUNTDOWN,
+    CUE_SAVED,
+    CUE_SWING,
+    CUE_WARN,
+    TEXT_LEFT,
+    TEXT_NO_SWING,
+    TEXT_RECORDING,
+    TEXT_SAVED,
+    TEXT_SWING,
+    error_prompt,
+)
 from app.ui.envcheck_dialog import EnvCheckDialog
 from app.ui.preview import VIEW_LEFT, VIEW_RIGHT, VIEW_SBS, PreviewWidget
 from app.ui.settings import AppSettings
@@ -38,7 +50,6 @@ from app.ui.widgets import (
     TelemetryValue,
     card_widget,
 )
-from app.voice import PROMPT_NO_SWING, error_prompt
 
 _SOURCE_FILE = "视频文件回放…"
 
@@ -103,12 +114,13 @@ class CapturePage(QWidget):
         self._refresh_counts()
         self._refresh_roi_hint()
         self.energy_bar.set_threshold(settings.motion_trigger_pct)
-        # H1 视觉倒计时：跟随 READY 态起始时间在横幅上倒数（不改核心层语义）
+        # H1 视觉倒计时：跟随 READY 态起始时间在横幅与预览大图上倒数（不改核心层语义）
         self._ready_since: float | None = None
+        self._saved_flash_until = 0.0  # 「已保存」闪屏截止时间（期间压过倒计时 cue）
         self._countdown_timer = QTimer(self)
         self._countdown_timer.setInterval(100)
         self._countdown_timer.timeout.connect(self._tick_countdown)
-        # M3：ARMED 持续无挥棒 → 语音提示（UI 层定时器，不改状态机）
+        # M3：ARMED 持续无挥棒 → 预览大字提醒（UI 层定时器，不改状态机）
         self._no_swing_interval_ms = NO_SWING_TIMEOUT_MS
         self._no_swing_timer = QTimer(self)
         self._no_swing_timer.timeout.connect(self._on_no_swing)
@@ -229,10 +241,6 @@ class CapturePage(QWidget):
         self.btn_envcheck.clicked.connect(self._on_envcheck_clicked)
         ctl.addWidget(self.btn_envcheck)
 
-        self.chk_mute = QCheckBox("静音")
-        self.chk_mute.toggled.connect(self.controller_muted)
-        ctl.addWidget(self.chk_mute)
-
         src_row = QHBoxLayout()
         src_label = QLabel("相机源")
         src_label.setObjectName("dim")
@@ -268,12 +276,9 @@ class CapturePage(QWidget):
         controller.preview_ready.connect(self._on_preview)
         controller.transitioned.connect(self._on_transition)
         controller.telemetry.connect(self._on_telemetry)
-        controller.clip_saved.connect(lambda _record: self._refresh_counts())
+        controller.clip_saved.connect(self._on_clip_saved)
         controller.error_occurred.connect(self._on_error)
         controller.camera_active.connect(self.camera_indicator.set_connected)
-
-    def controller_muted(self, muted: bool) -> None:
-        self.controller.set_muted(muted)
 
     # ---- 信号槽 ----
 
@@ -302,6 +307,25 @@ class CapturePage(QWidget):
             self._no_swing_timer.start()
         else:
             self._no_swing_timer.stop()
+        # ---- 预览大图视觉引导（零延迟，替代语音） ----
+        if state is State.ARMED:
+            self.preview.set_cue(TEXT_SWING, CUE_ARMED)
+        elif state is State.SWING:
+            self.preview.set_cue(TEXT_RECORDING, CUE_SWING)
+        elif state is State.IDLE:
+            if transition.reason == "presence_lost":
+                self.preview.set_cue(TEXT_LEFT, CUE_WARN)
+                QTimer.singleShot(1500, lambda: self.preview.set_cue("", ""))
+            else:
+                self.preview.set_cue("", "")
+        elif state is State.ERROR:
+            self.preview.set_cue("异常", CUE_WARN)
+
+    def _on_clip_saved(self, _record) -> None:
+        self._refresh_counts()
+        # 「已保存」绿闪 ~1.2s，期间压过倒计时数字（避免两个 cue 打架）
+        self._saved_flash_until = time.monotonic() + 1.2
+        self.preview.set_cue(TEXT_SAVED, CUE_SAVED)
 
     def _tick_countdown(self) -> None:
         """READY 倒计时大号数字（3/2/1）；倒计时结束交给状态机切 ARMED。"""
@@ -310,10 +334,18 @@ class CapturePage(QWidget):
         remaining = self.settings.countdown_seconds - (time.monotonic() - self._ready_since)
         n = math.ceil(remaining)
         self.state_banner.set_countdown(n if 1 <= n <= 9 else None)
+        if time.monotonic() >= self._saved_flash_until:
+            self.preview.set_cue(str(n) if 1 <= n <= 9 else "", CUE_COUNTDOWN)
 
     def _on_no_swing(self) -> None:
-        """M3：ARMED 超时未检测到挥棒 → 语音提示（可重复直到离开 ARMED）。"""
-        self.controller.say(PROMPT_NO_SWING, priority=1)
+        """M3：ARMED 超时未检测到挥棒 → 预览大字提醒（1.5s 后恢复「挥棒！」）。"""
+        self.preview.set_cue(TEXT_NO_SWING, CUE_WARN)
+        QTimer.singleShot(1500, self._restore_armed_cue)
+
+    def _restore_armed_cue(self) -> None:
+        sm = self.controller.state_machine
+        if sm is not None and sm.state is State.ARMED:
+            self.preview.set_cue(TEXT_SWING, CUE_ARMED)
 
     def manual_toggle(self) -> None:
         """L1 空格：ARMED 手动开始挥棒 / SWING 手动结束。"""

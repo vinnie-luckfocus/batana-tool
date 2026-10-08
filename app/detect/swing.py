@@ -42,6 +42,11 @@ class SwingDetector:
         self.release_ratio = float(release_ratio)
         self.pre_roll_frames = max(0, int(pre_roll_seconds * fps + 0.5))
         self.post_roll_frames = max(1, int(post_roll_seconds * fps + 0.5))
+        # 触发确认：连续 25ms 超阈帧数（120fps=3 帧）。倒计时结束的收势/调节姿态
+        # 是 1-2 帧毛刺，真挥棒 2%+ 会持续数十帧（实机误触发取证后的修复）
+        self.sustain_needed = max(1, int(0.025 * fps + 0.5))
+        self._sustain = 0
+        self._sustain_start = -1
         self._prev: np.ndarray | None = None
         self._active = False
         self._trigger_idx = -1
@@ -75,10 +80,19 @@ class SwingDetector:
         self.last_energy = energy
         if not self._active:
             if ratio > self.trigger_ratio:
-                self._active = True
-                self._trigger_idx = frame_idx
-                self._quiet = 0
-                return "started"
+                # 持续帧确认：毛刺不触发；触发帧记为连续段起点，
+                # pre_roll 仍覆盖运动起点之前
+                if self._sustain == 0:
+                    self._sustain_start = frame_idx
+                self._sustain += 1
+                if self._sustain >= self.sustain_needed:
+                    self._active = True
+                    self._trigger_idx = self._sustain_start
+                    self._quiet = 0
+                    self._sustain = 0
+                    return "started"
+            else:
+                self._sustain = 0
             return None
         # 挥棒进行中：运动占比回落且持续 post_roll 帧判结束
         if ratio < self.release_ratio:
@@ -95,5 +109,7 @@ class SwingDetector:
         self._active = False
         self._trigger_idx = -1
         self._quiet = 0
+        self._sustain = 0
+        self._sustain_start = -1
         self.last_ratio = 0.0
         self.last_energy = 0.0

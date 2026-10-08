@@ -465,17 +465,15 @@ def test_capture_page_envcheck_button_and_monitor(qapp, tmp_path):
     from app.ui.capture_page import CapturePage
     from app.ui.controller import CaptureController
     from app.ui.settings import AppSettings
-    from app.voice import NullVoice
 
     from conftest import FakePresence, FakeSwing, make_frame
 
     settings = AppSettings()
     settings._path = tmp_path / "settings.json"
     settings.storage_root = str(tmp_path / "store")
-    settings.voice_enabled = False
     store = SessionStore(settings.storage_root)
     controller = CaptureController(
-        settings, store, presence=FakePresence(), swing=FakeSwing(), voice=NullVoice()
+        settings, store, presence=FakePresence(), swing=FakeSwing()
     )
     page = CapturePage(settings, store, controller=controller)
     assert "环境体检" in page.btn_envcheck.text()

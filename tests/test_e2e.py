@@ -16,7 +16,6 @@ from app.session import (
     validate_session_builtin,
     validate_with_core,
 )
-from app.voice import PROMPT_READY, PROMPT_SWING, NullVoice, prompt_saved
 from samples.gen_synth import generate
 
 FPS = 30.0
@@ -29,7 +28,7 @@ def synth_video(tmp_path_factory) -> Path:
     return generate(out, fps=FPS, width=640, height=200, cycles=2)
 
 
-def run_pipeline(video: Path, out_root: Path) -> tuple[CaptureStateMachine, list[Path], NullVoice]:
+def run_pipeline(video: Path, out_root: Path) -> tuple[CaptureStateMachine, list[Path]]:
     presence = PresenceDetector(
         ROI, FPS, ratio_thresh=0.02, stable_seconds=0.5, absent_seconds=0.7,
         learning_rate=0.002,
@@ -39,7 +38,6 @@ def run_pipeline(video: Path, out_root: Path) -> tuple[CaptureStateMachine, list
         pre_roll_seconds=1.0, post_roll_seconds=0.8,
     )
     buffer = RingBuffer(3.0, FPS)
-    voice = NullVoice()
     exported: list[Path] = []
     writer = ClipWriter(fps=FPS)
     estimator = StubPoseEstimator()
@@ -59,7 +57,7 @@ def run_pipeline(video: Path, out_root: Path) -> tuple[CaptureStateMachine, list
 
     sm = CaptureStateMachine(
         presence, swing, buffer, FPS,
-        voice=voice, clip_saver=save_and_export, countdown_seconds=1.0,
+        clip_saver=save_and_export, countdown_seconds=1.0,
     )
     src = FileSource(video, fps=FPS)
     try:
@@ -68,20 +66,15 @@ def run_pipeline(video: Path, out_root: Path) -> tuple[CaptureStateMachine, list
             sm.feed_frame(idx, ts, left, right)
     finally:
         src.close()
-    return sm, exported, voice
+    return sm, exported
 
 
 def test_e2e_produces_valid_sessions(synth_video, tmp_path):
-    sm, exported, voice = run_pipeline(synth_video, tmp_path / "out")
+    sm, exported = run_pipeline(synth_video, tmp_path / "out")
 
     # 两个挥棒循环 → 至少 1 段素材（预期 2 段）
     assert len(exported) >= 1
     assert len(sm.clips) == len(exported)
-
-    texts = voice.texts()
-    assert PROMPT_READY in texts
-    assert PROMPT_SWING in texts
-    assert prompt_saved(1) in texts
 
     for out_dir in exported:
         names = {p.name for p in out_dir.iterdir()}
@@ -103,7 +96,7 @@ def test_e2e_produces_valid_sessions(synth_video, tmp_path):
 
 @pytest.mark.skipif(not core_validator_available(), reason="本机不存在 batana-core 仓")
 def test_e2e_sessions_pass_core_full_validation(synth_video, tmp_path):
-    _, exported, _ = run_pipeline(synth_video, tmp_path / "out")
+    _, exported = run_pipeline(synth_video, tmp_path / "out")
     assert exported
     for out_dir in exported:
         errors = validate_with_core(out_dir / "session.json")

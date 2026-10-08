@@ -27,7 +27,14 @@ from app.ui.review_page import ReviewPage
 from app.ui.settings import AppSettings
 from app.ui.theme import semantic_hex
 from app.ui.widgets import STATE_LABELS, MiniBar, StateBanner
-from app.voice import PROMPT_ERROR_CAMERA, PROMPT_ERROR_STORAGE, PROMPT_NO_SWING, NullVoice
+from app.ui.cues import (
+    CUE_ARMED,
+    CUE_WARN,
+    PROMPT_ERROR_CAMERA,
+    PROMPT_ERROR_STORAGE,
+    TEXT_NO_SWING,
+    TEXT_SWING,
+)
 
 from conftest import FakePresence, FakeSwing, make_frame
 from test_ui_smoke import _write_test_clip
@@ -48,7 +55,6 @@ def settings(tmp_path) -> AppSettings:
     s.storage_root = str(tmp_path / "store")
     s.capture_fps = FPS
     s.countdown_seconds = 0.2
-    s.voice_enabled = False
     return s
 
 
@@ -57,12 +63,11 @@ def store(settings) -> SessionStore:
     return SessionStore(settings.storage_root)
 
 
-def _controller(settings, store, present=True, start_at=4, end_at=8, voice=None):
+def _controller(settings, store, present=True, start_at=4, end_at=8):
     return CaptureController(
         settings, store,
         presence=FakePresence(present=present),
         swing=FakeSwing(pre_roll_frames=2, start_at=start_at, end_at=end_at),
-        voice=voice or NullVoice(),
     )
 
 
@@ -252,25 +257,34 @@ def test_startup_rebuild_hint(qapp, settings, store):
 
 
 def test_error_prompt_classification():
-    from app.voice import error_prompt
+    from app.ui.cues import error_prompt
 
     assert error_prompt("UVC 采集失败（设备 index=0 可能已断开）") == PROMPT_ERROR_CAMERA
     assert error_prompt("片段落盘失败: 磁盘已满") == PROMPT_ERROR_STORAGE
     assert error_prompt("未知错误") not in (PROMPT_ERROR_CAMERA, PROMPT_ERROR_STORAGE)
 
 
-# ---- M3 ARMED 超时语音 + 能量阈值刻度 ----
+# ---- M3 ARMED 超时视觉提醒 + 能量阈值刻度 ----
 
 
-def test_armed_timeout_voice_prompt(qapp, settings, store):
-    voice = NullVoice()
-    controller = _controller(settings, store, start_at=None, voice=voice)
+def test_armed_shows_swing_cue(qapp, settings, store):
+    # 视觉引导：ARMED 即出「挥棒！」大字（armed cue），替代原语音播报
+    controller = _controller(settings, store, start_at=None)
+    page = CapturePage(settings, store, controller=controller)
+    _feed(controller, 3)  # IDLE→READY→（倒计时 2 帧）→ARMED
+    assert controller.state_machine.state is State.ARMED
+    assert page.preview.cue() == (TEXT_SWING, CUE_ARMED)
+    page.shutdown()
+
+
+def test_armed_timeout_visual_prompt(qapp, settings, store):
+    controller = _controller(settings, store, start_at=None)
     page = CapturePage(settings, store, controller=controller)
     page._no_swing_interval_ms = 50
     _feed(controller, 3)  # IDLE→READY→（倒计时 2 帧）→ARMED
     assert controller.state_machine.state is State.ARMED
-    QTest.qWait(300)
-    assert PROMPT_NO_SWING in voice.texts()
+    QTest.qWait(200)
+    assert page.preview.cue() == (TEXT_NO_SWING, CUE_WARN)
     page.shutdown()
 
 
