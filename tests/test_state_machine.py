@@ -14,12 +14,13 @@ def build(
     swing: FakeSwing | None = None,
     countdown_seconds: float = 3.0,
     clip_saver=None,
+    buffer_seconds: float = 3.0,
 ) -> tuple[CaptureStateMachine, FakePresence, FakeSwing, list]:
     p = presence or FakePresence()
     s = swing or FakeSwing()
     events: list = []
     sm = CaptureStateMachine(
-        p, s, RingBuffer(3.0, FPS), FPS,
+        p, s, RingBuffer(buffer_seconds, FPS), FPS,
         clip_saver=clip_saver, countdown_seconds=countdown_seconds,
     )
     sm.add_listener(events.append)
@@ -55,7 +56,7 @@ def test_happy_path_produces_clip():
     sm, p, _, events = build(swing=swing, countdown_seconds=3.0, clip_saver=saved.append)
     p.set(True)
     feed(sm, 0, 50)
-    assert sm.state is State.READY  # SAVING 后循环回 READY
+    assert sm.state is State.SAVING  # 挂起等待落盘确认，不再自动回 READY
     assert len(saved) == 1
     clip = saved[0]
     assert clip.seq == 1
@@ -63,10 +64,49 @@ def test_happy_path_produces_clip():
     assert clip.start_idx == 30  # trigger - pre_roll
     assert clip.end_idx == 45
     assert len(clip.frames()) == 16
+    sm.notify_saved()
+    assert sm.state is State.READY
     path = [(e.prev, e.next) for e in events]
     assert (State.ARMED, State.SWING) in path
     assert (State.SWING, State.SAVING) in path
     assert (State.SAVING, State.READY) in path
+
+
+def test_notify_saved_matches_seq_and_state():
+    """过期/错序确认被忽略：仅 SAVING 态且序号匹配才回 READY。"""
+    swing = FakeSwing(pre_roll_frames=2, start_at=12, end_at=15)
+    saved: list[Clip] = []
+    sm, p, _, _ = build(swing=swing, countdown_seconds=1.0, clip_saver=saved.append)
+    p.set(True)
+    feed(sm, 0, 16)
+    assert sm.state is State.SAVING
+    sm.notify_saved(99)  # 序号不匹配（如上一段的延迟确认）
+    assert sm.state is State.SAVING
+    sm.notify_saved(1)
+    assert sm.state is State.READY
+    sm.notify_saved()  # 非 SAVING 态：no-op
+    assert sm.state is State.READY
+
+
+def test_max_swing_duration_forces_finish():
+    """运动长时间不回落：到达最长时限强制收尾，pre-roll 与挥棒起点完整保留。"""
+    # countdown 1s → ARMED 于 frame 10，宽限 3 帧 → 检测自 frame 13 起
+    swing = FakeSwing(pre_roll_frames=5, start_at=13, end_at=None)  # 永不主动结束
+    saved: list[Clip] = []
+    # 缓冲 5s=50 帧 ≥ pre_roll(5) + max_swing(30) + 余量（控制器侧同口径兜底）
+    sm, p, _, events = build(
+        swing=swing, countdown_seconds=1.0, clip_saver=saved.append, buffer_seconds=5.0,
+    )
+    p.set(True)
+    # FPS=10，max_swing 3s → 30 帧；trigger=13 → frame 43 强制收尾
+    feed(sm, 0, 50)
+    assert len(saved) == 1
+    clip = saved[0]
+    assert clip.trigger_idx == 13
+    assert clip.end_idx == 43
+    assert clip.start_idx == 8  # pre-roll 完整保留，未被缓冲钳过触发帧
+    assert clip.start_idx <= clip.trigger_idx
+    assert any(e.reason == "max_duration" for e in events)
 
 
 def test_person_leaves_during_ready_goes_idle():
@@ -108,6 +148,8 @@ def test_discard_and_retake():
     feed(sm, 40, 50)
     assert len(saved) == 1
     assert saved[0].seq == 1
+    assert sm.state is State.SAVING
+    sm.notify_saved()
     assert sm.state is State.READY
 
 
@@ -121,6 +163,8 @@ def test_manual_start_stop_fallback():
     assert sm.state is State.SWING
     idx = feed(sm, idx, 5)
     sm.manual_stop()
+    assert sm.state is State.SAVING
+    sm.notify_saved()
     assert sm.state is State.READY
     assert len(saved) == 1
     assert saved[0].end_idx >= saved[0].start_idx

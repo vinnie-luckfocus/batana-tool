@@ -28,12 +28,14 @@ from app.ui.cues import (
     CUE_ARMED,
     CUE_COUNTDOWN,
     CUE_SAVED,
+    CUE_SAVING,
     CUE_SWING,
     CUE_WARN,
     TEXT_LEFT,
     TEXT_NO_SWING,
     TEXT_RECORDING,
     TEXT_SAVED,
+    TEXT_SAVING,
     TEXT_SWING,
     error_prompt,
 )
@@ -312,6 +314,9 @@ class CapturePage(QWidget):
             self.preview.set_cue(TEXT_SWING, CUE_ARMED)
         elif state is State.SWING:
             self.preview.set_cue(TEXT_RECORDING, CUE_SWING)
+        elif state is State.SAVING:
+            # 落盘中（含沉淀等待）：「保存中…」，worker 完成后由 _on_clip_saved 换成「已保存 ✓」
+            self.preview.set_cue(TEXT_SAVING, CUE_SAVING)
         elif state is State.IDLE:
             if transition.reason == "presence_lost":
                 self.preview.set_cue(TEXT_LEFT, CUE_WARN)

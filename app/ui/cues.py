@@ -12,6 +12,7 @@ CUE_COUNTDOWN = "countdown"  # 倒计时大号数字
 CUE_ARMED = "armed"          # 待挥棒：绿色描边 + 大字，持续到挥棒开始
 CUE_SWING = "swing"          # 录制中：红色描边 + 顶部标记
 CUE_SAVED = "saved"          # 已保存：绿色闪屏，短暂显示
+CUE_SAVING = "saving"        # 保存中：白色中字（落盘+沉淀等待期间）
 CUE_WARN = "warn"            # 告警：橙色（人员离开/超时未挥棒/异常）
 
 # ---- 文案 ----

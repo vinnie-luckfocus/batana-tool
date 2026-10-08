@@ -21,7 +21,7 @@ VIEW_RIGHT = "right"
 VIEW_SBS = "sbs"
 
 # 提示类型（与 app/ui/cues.py 的 CUE_* 对应；preview 不依赖 cues 模块保持轻耦合）
-_CUE_KINDS = ("countdown", "armed", "swing", "saved", "warn")
+_CUE_KINDS = ("countdown", "armed", "swing", "saved", "saving", "warn")
 
 
 def gray_to_qimage(frame: np.ndarray) -> QImage:
@@ -302,6 +302,9 @@ class PreviewWidget(FrameView):
         elif kind == "countdown":
             # 倒计时：超大数字（约占画面高 55%）
             draw_centered(text, QColor(255, 255, 255), max(64, int(rect.height() * 0.55)))
+        elif kind == "saving":
+            # 保存中：白色中字（落盘+沉淀等待，不喧宾夺主）
+            draw_centered(text, QColor(255, 255, 255), max(28, int(rect.height() * 0.16)))
         else:  # warn
             orange = semantic_color("orange")
             draw_centered(text, orange, max(36, int(rect.height() * 0.20)))

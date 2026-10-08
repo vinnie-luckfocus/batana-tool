@@ -65,6 +65,7 @@ class CaptureStateMachine:
 
     - feed_frame()：每帧调用，内部驱动就位/挥棒检测与状态迁移。
     - manual_start()/manual_stop()：检测失败兜底的手动开始/结束（PRD F5）。
+    - notify_saved()：落盘完成确认，SAVING → READY（重启倒计时的唯一入口）。
     - discard()：误检立即丢弃重拍。
     - pause()/error()/recover()：人离开/异常路径。
     """
@@ -77,6 +78,7 @@ class CaptureStateMachine:
         fps: float,
         clip_saver: ClipSaver | None = None,
         countdown_seconds: float = 3.0,
+        max_swing_seconds: float = 3.0,
     ) -> None:
         self.presence = presence
         self.swing = swing
@@ -84,6 +86,9 @@ class CaptureStateMachine:
         self.fps = float(fps)
         self.clip_saver = clip_saver
         self.countdown_frames = max(1, int(countdown_seconds * fps + 0.5))
+        # 挥棒最长时限：真实挥棒 ≤2s；运动持续（人走动等）不判结束时强制收尾，
+        # 否则环形缓冲被长 SWING 冲垮，pre-roll 与挥棒起点被覆盖（实机取证后的修复）
+        self.max_swing_frames = max(1, int(max_swing_seconds * fps + 0.5))
         self.state = State.IDLE
         self.seq = 0
         self.clips: list[Clip] = []
@@ -91,6 +96,9 @@ class CaptureStateMachine:
         self._listeners: list[TransitionListener] = []
         self._ready_elapsed = 0
         self._trigger_idx = -1
+        # SAVING 挂起态：等落盘完成确认（notify_saved）后才回 READY 重启倒计时
+        self._saving_seq = -1
+        self._saving_clip: Clip | None = None
         # ARMED 入口宽限（忽略到此帧号为止的挥棒触发）：倒计时刚结束时用户仍在
         # 收势/调整姿态，这类动作会瞬间超阈误触发，导致片段在挥棒前就关闭
         self._armed_grace_until = -1
@@ -148,6 +156,12 @@ class CaptureStateMachine:
                 self.swing.update(left, frame_idx)
             if not self.swing.active and self._trigger_idx >= 0:
                 self._finish_swing(frame_idx, reason="swing_ended")
+            elif (
+                self._trigger_idx >= 0
+                and frame_idx - self._trigger_idx >= self.max_swing_frames
+            ):
+                # 运动长时间不回落（挥后走动等）：强制收尾，保住 pre-roll 与挥棒起点
+                self._finish_swing(frame_idx, reason="max_duration")
             return
 
     def manual_start(self, frame_idx: int | None = None) -> None:
@@ -162,13 +176,29 @@ class CaptureStateMachine:
         self._transition(State.SWING, reason="manual_start")
 
     def manual_stop(self, frame_idx: int | None = None) -> None:
-        """手动结束（兜底）：SWING → SAVING → READY。"""
+        """手动结束（兜底）：SWING → SAVING →（落盘确认后）READY。"""
         if self.state is not State.SWING:
             return
         latest = self.buffer.latest()
         idx = frame_idx if frame_idx is not None else (latest[0] if latest else self._trigger_idx)
         self.swing._active = False
         self._finish_swing(idx, reason="manual_stop")
+
+    def notify_saved(self, seq: int | None = None) -> None:
+        """落盘完成确认：SAVING → READY，此后才重启倒计时（节奏由调用方控制）。
+
+        seq 用于忽略过期确认（如等待期间人离开重进后，前一段的延迟确认）；
+        仅当 state 为 SAVING 且 seq 匹配（或未指定）时生效。
+        """
+        if self.state is not State.SAVING:
+            return
+        if seq is not None and seq != self._saving_seq:
+            return
+        clip = self._saving_clip
+        self._saving_seq = -1
+        self._saving_clip = None
+        self._ready_elapsed = 0
+        self._transition(State.READY, reason="saved", clip=clip)
 
     def discard(self) -> None:
         """误检丢弃重拍：SWING/ARMED → READY，不产出片段。"""
@@ -206,6 +236,13 @@ class CaptureStateMachine:
         if span:
             start_idx = max(start_idx, span[0])
         start_idx = max(start_idx, 0)
+        if start_idx > self._trigger_idx:
+            # 数据完整性红线：触发帧已被缓冲覆盖，本段必丢挥棒起点。
+            # 正常配置（缓冲 ≥ pre_roll + max_swing + 余量）不应发生。
+            log.warning(
+                "片段起点 %d 晚于触发帧 %d：环形缓冲容量不足，挥棒起点已丢失",
+                start_idx, self._trigger_idx,
+            )
         clip = Clip(
             seq=self.seq,
             start_idx=start_idx,
@@ -217,15 +254,24 @@ class CaptureStateMachine:
         self._trigger_idx = -1
         self.swing.reset()
         self._transition(State.SAVING, reason=reason, clip=clip)
+        self._saving_seq = clip.seq
+        self._saving_clip = clip
         try:
             if self.clip_saver is not None:
                 self.clip_saver(clip)
         except Exception as e:
             self.clips.remove(clip)
+            self._saving_seq = -1
+            self._saving_clip = None
             self.error(f"片段落盘失败: {e}")
             return
-        self._transition(State.READY, reason="saved", clip=clip)
-        self._ready_elapsed = 0
+        if self.state is State.SAVING and self.clip_saver is None:
+            # 无落盘回调（裸用/测试）：立即回 READY，保持原有循环语义
+            self._saving_seq = -1
+            self._saving_clip = None
+            self._ready_elapsed = 0
+            self._transition(State.READY, reason="saved", clip=clip)
+        # 有落盘回调：挂起 SAVING，等 notify_saved 确认落盘完成后再回 READY
 
     def _transition(self, next_state: State, reason: str, clip: Clip | None = None) -> None:
         prev = self.state

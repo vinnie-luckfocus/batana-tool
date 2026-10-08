@@ -59,7 +59,7 @@ python3.12 -m venv .venv
 ### 核心层 API（供 UI 层集成，全部可无头运行）
 
 - `app.capture`：`FrameSource` protocol（`frames() -> Iterator[(frame_idx, ts_ns, sbs_frame)]`）；`UvcSource`（UVC 采集，参数化分辨率/fps/像素格式）；`FileSource`（视频回放）；`split_sbs()`（SBS 对半切分）；`RingBuffer(seconds, fps)`（线程安全预录环缓冲，`extract(start_idx, end_idx)` 区间提取）；`ClipWriter(fps).write_clip(frames, out_dir, meta)`（FFV1/MKV 优先、mp4v 回退告警，同时写 `timestamps.csv` + `capture_meta.json`）
-- `app.detect`：`PresenceDetector(roi, fps, ...)`（MOG2 前景占比 + 稳定 N 帧判定就位/离场，就位后冻结背景模型）；`SwingDetector(roi, fps, pix_thresh, trigger/release_ratio, pre/post_roll)`（显著运动像素占比，底噪免疫，返回 `started`/`ended`）；`CaptureStateMachine(presence, swing, buffer, fps, voice=, clip_saver=)`（PRD F5 状态机 IDLE→READY→ARMED→SWING→SAVING→READY；`feed_frame()` 逐帧驱动；`add_listener()` 迁移回调供 UI 接信号；`manual_start/stop()` 手动兜底；`discard()` 丢弃重拍；`pause()/error()/recover()`）
+- `app.detect`：`PresenceDetector(roi, fps, ...)`（MOG2 前景占比 + 稳定 N 帧判定就位/离场，就位后冻结背景模型）；`SwingDetector(roi, fps, pix_thresh, trigger/release_ratio, pre/post_roll)`（显著运动像素占比，底噪免疫，返回 `started`/`ended`）；`CaptureStateMachine(presence, swing, buffer, fps, clip_saver=, countdown_seconds=, max_swing_seconds=)`（PRD F5 状态机 IDLE→READY→ARMED→SWING→SAVING→READY；SAVING 挂起等 `notify_saved()` 落盘确认后才回 READY；挥棒超 max_swing 强制收尾防缓冲溢出；`feed_frame()` 逐帧驱动；`add_listener()` 迁移回调供 UI 接信号；`manual_start/stop()` 手动兜底；`discard()` 丢弃重拍；`pause()/error()/recover()`）
 - `app.pose`：`PoseFrame`/`Keypoint`（33 点契约拓扑，`correct()` 手动修正保留自动原值）；`write_pose2d()/read_pose2d()`；`PoseEstimator` protocol + `StubPoseEstimator`（确定性）+ `MediaPipePoseEstimator`（Tasks PoseLandmarker，需下载 `.task` 模型文件）
 - `app.session`：`SessionStore(root)`（index.json 原子落盘、三段式标记 合格/不合格/待复核、修剪、删除、`rebuild()` 崩溃重建、`counts()`）；`export_session(clip, out_root, pose_frames=, ...)`（产出契约目录）；`validate_session_builtin()`（内置必填校验）；`validate_with_core()`（本机存在 batana-core 时调其 `tools/validate_session.py` 全量校验）
 - `app.envcheck`（F11）：8 项纯函数检查（光照/频闪含 FFT 市电特征识别/清晰度/背景干扰/水平/构图/帧率掉帧/磁盘，阈值全参数化见 `defaults.py`）；`EnvironmentChecker(frame_source, roi, settings, report_root)`（`run(duration_s, progress_cb)` 采样并逐项检查，复用 FrameSource 抽象，报告 JSON 落盘 `env_reports/`）；无头 CLI `python -m app.envcheck --source <视频> --duration 10`
@@ -96,6 +96,7 @@ samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→�
 
 | 版本 | 日期 | 变更内容 | 同步 |
 | --- | --- | --- | --- |
+| 0.4.3 | 2026-10-08 | 实机三连修复：①审核页切页自动刷新素材列表（此前新保存段须重启可见）；②挥棒最长时限 max_swing_seconds（默认 3s）+ 缓冲容量运行时兜底（≥ pre-roll+最长挥棒+1s）——实机取证：旧设置 buffer 3s 遇长 SWING（挥后持续走动）环形缓冲溢出，产出 trigger_idx 为负（-56/-148/-437）、挥棒起点整段丢失的残缺素材；③节奏控制：SAVING 挂起等落盘确认（notify_saved 按序号防过期），保存完成沉淀 3s（post_save_settle_seconds 可调）再倒计时，SAVING 期间预览显示「保存中…」，「已保存」不再插入倒计时中间；新增 3 项状态机测试（合计 144 项全绿） | 待同步司令塔 repos.yaml |
 | 0.1-draft | 2026-09-20 | 仓库创建，PRD v1.0 定稿（docs/prd.md） | 待同步司令塔 repos.yaml |
 | 0.1 | 2026-09-20 | 核心层实现：采集/检测/语音/姿态/会话导出 + 59 项无头测试 + 合成素材生成器（UI 页面待下一里程碑） | 待同步司令塔 repos.yaml |
 | 0.4 | 2026-10-08 | 语音引导全面改为预览画面大号视觉提示（倒计时数字/绿框「挥棒！」/红框「录制中」/绿闪「已保存」/告警大字）：实机取证证实 say 语音队列延迟导致挥棒落在片段外；同步移植 Tauri 期修复——挥棒触发持续帧确认（25ms）、ARMED 0.3s 宽限期、预录缓冲默认 3→5s；删除 app.voice 与静音/语速设置项，142 项测试全绿 | 待同步司令塔 repos.yaml |

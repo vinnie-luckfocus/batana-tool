@@ -16,7 +16,7 @@ import time
 from collections import deque
 
 import numpy as np
-from PySide6.QtCore import QThread, QObject, Signal
+from PySide6.QtCore import QThread, QObject, QTimer, Signal
 
 from app.capture import (
     ClipWriter,
@@ -89,7 +89,7 @@ def build_uvc_source(s: AppSettings) -> FrameSource:
 class _SaveWorker(QThread):
     """片段落盘 worker：抓帧线程只入队，编码/写盘在此线程串行消费（PRD §5 EncodeWorker）。"""
 
-    saved = Signal(object)   # 登记后的 record dict
+    saved = Signal(object, int)  # (登记后的 record dict, 状态机片段序号)
     failed = Signal(str)     # 落盘异常消息
 
     def __init__(self, store: SessionStore, parent: QObject | None = None) -> None:
@@ -127,7 +127,7 @@ class _SaveWorker(QThread):
             fps=fps,
             trigger_idx=clip.trigger_idx - clip.start_idx,  # 段内相对帧号
         )
-        self.saved.emit(record)
+        self.saved.emit(record, clip.seq)
 
     def shutdown(self, timeout_ms: int = 15000) -> None:
         """排空队列后退出（哨兵排在既有任务之后，不丢片段）。"""
@@ -199,11 +199,12 @@ class CaptureController(QObject):
         self._lock = threading.Lock()
         self._thread: _CaptureThread | None = None
         self._paused = False
+        self._closed = False
         self._measured_fps = 0.0
         self._last_frame: tuple[np.ndarray, np.ndarray] | None = None
         # M1 落盘 worker：抓帧线程只入队，编码/写盘串行消费不阻塞采集
         self._save_worker = _SaveWorker(store, parent=self)
-        self._save_worker.saved.connect(self.clip_saved.emit)
+        self._save_worker.saved.connect(self._on_worker_saved)
         self._save_worker.failed.connect(
             lambda msg: self._report_error(f"片段落盘失败: {msg}")
         )
@@ -247,10 +248,16 @@ class CaptureController(QObject):
         )
         self._presence = presence
         self._swing = swing
+        # 缓冲容量下限：必须容纳 pre_roll + 最长挥棒 + 余量，否则长 SWING
+        # 会冲垮环形缓冲、覆盖挥棒起点（旧设置 buffer_seconds=3 实机丢素材的修复）
+        buffer_seconds = max(
+            s.buffer_seconds, s.pre_roll_seconds + s.max_swing_seconds + 1.0
+        )
         sm = CaptureStateMachine(
-            presence, swing, RingBuffer(s.buffer_seconds, fps), fps,
+            presence, swing, RingBuffer(buffer_seconds, fps), fps,
             clip_saver=self._save_clip,
             countdown_seconds=s.countdown_seconds,
+            max_swing_seconds=s.max_swing_seconds,
         )
         sm.add_listener(self.transitioned.emit)
         return sm
@@ -405,8 +412,29 @@ class CaptureController(QObject):
                 self._sm = self._make_state_machine(self._sm.fps, roi)
 
     def close(self) -> None:
+        self._closed = True
         self.stop()
         self._save_worker.shutdown()
+
+    # ---- 落盘完成 → 沉淀 → 重启倒计时（节奏控制，PRD F4） ----
+
+    def _on_worker_saved(self, record: dict, sm_seq: int) -> None:
+        """落盘完成：通知 UI（「已保存」），沉淀 post_save_settle_seconds 后
+        才确认状态机回 READY 重启倒计时——保存与下一次挥棒之间留出复位时间。"""
+        self.clip_saved.emit(record)
+        settle_ms = int(self.settings.post_save_settle_seconds * 1000)
+        if settle_ms <= 0:
+            self._notify_saved(sm_seq)
+        else:
+            QTimer.singleShot(settle_ms, lambda: self._notify_saved(sm_seq))
+
+    def _notify_saved(self, sm_seq: int) -> None:
+        """确认状态机 SAVING → READY（过期确认由状态机按序号忽略）。"""
+        if self._closed:
+            return
+        with self._lock:
+            if self._sm is not None:
+                self._sm.notify_saved(sm_seq)
 
     # ---- 异常上报（抓帧线程 / 落盘 worker 共用入口） ----
 

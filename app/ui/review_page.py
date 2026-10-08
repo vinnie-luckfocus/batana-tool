@@ -406,6 +406,12 @@ class ReviewPage(QWidget):
         if hasattr(self, "list_empty"):
             self._update_empty_hint()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        # 切到审核页时刷新列表：采集页新保存的段无需重启即可见
+        if hasattr(self, "list_clips"):
+            self.refresh_list()
+
     def _on_item_selected(self, item: QListWidgetItem | None, _prev=None) -> None:
         if item is not None:
             self.load_record(item.data(Qt.ItemDataRole.UserRole))

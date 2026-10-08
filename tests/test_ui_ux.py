@@ -55,6 +55,7 @@ def settings(tmp_path) -> AppSettings:
     s.storage_root = str(tmp_path / "store")
     s.capture_fps = FPS
     s.countdown_seconds = 0.2
+    s.post_save_settle_seconds = 0.0  # 测试：落盘确认立即回 READY，不等沉淀
     return s
 
 
@@ -315,9 +316,11 @@ def test_space_manual_toggle(qapp, settings, store):
     assert controller.state_machine.state is State.ARMED
     page.manual_toggle()  # 空格 = 手动开始
     assert controller.state_machine.state is State.SWING
-    page.manual_toggle()  # 空格 = 手动结束 → SAVING → READY
-    assert controller.state_machine.state is State.READY
+    page.manual_toggle()  # 空格 = 手动结束 → SAVING（挂起等落盘确认）
+    assert controller.state_machine.state is State.SAVING
     assert controller.flush_saves()
+    qapp.processEvents()  # worker 落盘完成 → 确认 → READY
+    assert controller.state_machine.state is State.READY
     page.shutdown()
 
 

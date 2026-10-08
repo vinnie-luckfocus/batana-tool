@@ -46,6 +46,7 @@ def settings(tmp_path) -> AppSettings:
     s.capture_fps = FPS
     s.countdown_seconds = 0.2
     s.buffer_seconds = 3.0
+    s.post_save_settle_seconds = 0.0  # 测试：落盘确认立即回 READY，不等沉淀
     return s
 
 

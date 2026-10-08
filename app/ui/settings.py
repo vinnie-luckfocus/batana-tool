@@ -41,8 +41,13 @@ class AppSettings:
     pre_roll_seconds: float = 1.0
     post_roll_seconds: float = 1.0
     countdown_seconds: float = 3.0
+    # 挥棒最长时限：超时强制收尾，防止长 SWING 冲垮环形缓冲丢失挥棒起点
+    max_swing_seconds: float = 3.0
+    # 保存完成 → 下次倒计时的沉淀间隔（给人复位的时间，节奏不赶）
+    post_save_settle_seconds: float = 3.0
     # 须容纳 pre_roll(1s) + 挥棒全程(~1.5s) + post_roll(1s) 并留余量；
-    # 3s 在 120fps 下片头必被环形缓冲截断（实机取证后的修复）
+    # 3s 在 120fps 下片头必被环形缓冲截断（实机取证后的修复）。
+    # 运行时还会按 pre_roll + max_swing + 1s 自动抬下限（见 controller）
     buffer_seconds: float = 5.0
     # F6 存储
     storage_root: str = DEFAULT_STORAGE_ROOT

@@ -54,6 +54,7 @@ def run_pipeline(video: Path, out_root: Path) -> tuple[CaptureStateMachine, list
                 pose_model=StubPoseEstimator.model_name, writer=writer,
             )
         )
+        sm.notify_saved()  # 落盘完成确认 → READY，继续下一挥棒循环
 
     sm = CaptureStateMachine(
         presence, swing, buffer, FPS,
