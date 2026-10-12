@@ -51,8 +51,10 @@ class AppSettings:
     buffer_seconds: float = 5.0
     # F6 存储
     storage_root: str = DEFAULT_STORAGE_ROOT
-    # F7 骨架（MediaPipe 模型文件路径；空 = 未配置，用 Stub）
+    # F7 骨架（MediaPipe 模型文件路径；空 = 自动探测 batana-core 仓 models/files/）
     pose_model_path: str = ""
+    # F8 简化手部：隐藏 pinky/index/thumb 细节点，仅手腕可编辑（数据仍 33 点全量）
+    simplify_hands: bool = True
     # F10 导出校验：batana-core 仓路径（空 = 自动探测常见位置）
     core_repo_path: str = ""
     # F11 环境检查（阈值默认值见 app/envcheck/defaults.py，设置页可调）

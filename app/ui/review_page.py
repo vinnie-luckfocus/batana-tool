@@ -33,7 +33,7 @@ from app.session import (
     validate_session_builtin,
 )
 from app.session.export import find_core_repo_dir, resolve_core_repo, validate_with_core
-from app.ui.player import ClipPlayer, PlayerWidget
+from app.ui.player import KEYPOINT_LABELS_CN, ClipPlayer, PlayerWidget
 from app.ui.settings import AppSettings
 from app.ui.theme import mono_font, ui_font
 from app.ui.widgets import EmptyStateView, SectionHeader, TelemetryValue, card_widget
@@ -165,7 +165,9 @@ class ReviewPage(QWidget):
         self._pose_eye = "left"
         self._pose_model = ""
         self._pose_fps = 0.0
-        self._undo_stack: list[tuple[int, int]] = []  # (帧位置, 关键点索引)
+        # 撤销栈：每次修正/传播为一批（传播一批可含多帧同点，一次撤销整批回退）
+        self._undo_stack: list[list[tuple[int, int]]] = []  # 批 = [(帧位置, 关键点索引), ...]
+        self._last_corrected_kp: int | None = None  # 最近修正的关键点（传播修正的源）
         self._pose_dirty = False
         self._trim_dirty = False
         self._pose_worker: _PoseWorker | None = None
@@ -334,15 +336,32 @@ class ReviewPage(QWidget):
         pose_row.addWidget(self.btn_rerun_frame)
         pose_row.addWidget(self.btn_undo)
         pose_box.addLayout(pose_row)
+        # 传播修正：最近拖动点的偏移量向相邻帧扩散（连续错位一键修正）
+        prop_row = QHBoxLayout()
+        self.btn_prop_prev = QPushButton("◀ 传播到前帧")
+        self.btn_prop_next = QPushButton("传播到后帧 ▶")
+        for b in (self.btn_prop_prev, self.btn_prop_next):
+            b.setToolTip("把最近修正点的偏移量逐帧传播，自动检测恢复可信或遇人工帧即停")
+        self.btn_prop_prev.clicked.connect(lambda: self.propagate_correction(-1))
+        self.btn_prop_next.clicked.connect(lambda: self.propagate_correction(1))
+        prop_row.addWidget(self.btn_prop_prev)
+        prop_row.addWidget(self.btn_prop_next)
+        pose_box.addLayout(prop_row)
         pose_row2 = QHBoxLayout()
         self.chk_pose = QCheckBox("骨架叠加")
         self.chk_pose.setChecked(True)
         self.chk_pose.toggled.connect(self.player.set_pose_visible)
+        self.chk_simplify = QCheckBox("简化手部")
+        self.chk_simplify.setChecked(self.settings.simplify_hands)
+        self.chk_simplify.setToolTip("隐藏小指/食指/拇指细节点，仅手腕可编辑（数据仍保留 33 点全量）")
+        self.chk_simplify.toggled.connect(self._on_simplify_toggled)
         self.btn_save_pose = QPushButton("保存骨架")
         self.btn_save_pose.clicked.connect(self.save_pose)
         pose_row2.addWidget(self.chk_pose)
+        pose_row2.addWidget(self.chk_simplify)
         pose_row2.addWidget(self.btn_save_pose)
         pose_box.addLayout(pose_row2)
+        self.player.set_simplify_hands(self.chk_simplify.isChecked())
         self.label_pose = TelemetryValue("骨架", "未跑")
         pose_box.addWidget(self.label_pose)
         pose_box.addStretch(1)
@@ -702,35 +721,87 @@ class ReviewPage(QWidget):
 
     # ---- 手动修正（PRD F8） ----
 
+    def _on_simplify_toggled(self, on: bool) -> None:
+        """简化手部开关：即时生效并持久化（数据始终保留 33 点全量）。"""
+        self.player.set_simplify_hands(on)
+        self.settings.simplify_hands = on
+        self.settings.save()
+
     def correct_keypoint(self, kp_idx: int, x: float, y: float) -> None:
         """拖动落点：调核心 PoseFrame.correct 落账（保留自动原值）。"""
         if self._pose_frames is None or not (0 <= self._frame_pos < len(self._pose_frames)):
             return
         frame = self._pose_frames[self._frame_pos]
         frame.correct(kp_idx, x, y)
-        self._undo_stack.append((self._frame_pos, kp_idx))
+        self._undo_stack.append([(self._frame_pos, kp_idx)])
+        self._last_corrected_kp = kp_idx
         self._pose_dirty = True
         self.label_pose.set_value("已修正（未保存）")
         self._show_frame()
 
+    def propagate_correction(self, direction: int = 1) -> int:
+        """把最近修正点的偏移量向后续/之前帧传播（连续错位一键修正）。
+
+        语义：从当前帧的修正量（manual - auto 原值）出发，逐帧应用到
+        自动检测不可信的帧（visibility < 0.5），遇到自动恢复可信或人工
+        修正过的帧即停。整批一次撤销可回退。返回传播帧数。
+        """
+        if self._pose_frames is None or self._last_corrected_kp is None:
+            self.status_line.setText("请先拖动修正一个关键点，再传播")
+            return 0
+        idx = self._last_corrected_kp
+        src = self._pose_frames[self._frame_pos].keypoints[idx]
+        if not src.manual or src.auto is None:
+            self.status_line.setText("当前帧该点无修正量可传播（请先在本帧拖动修正）")
+            return 0
+        dx, dy = src.x - src.auto["x"], src.y - src.auto["y"]
+        n = len(self._pose_frames)
+        batch: list[tuple[int, int]] = []
+        f = self._frame_pos + direction
+        while 0 <= f < n:
+            kp = self._pose_frames[f].keypoints[idx]
+            if kp.manual or kp.visibility >= 0.5:
+                break  # 人工帧不覆盖；自动恢复可信即停
+            self._pose_frames[f].correct(idx, kp.x + dx, kp.y + dy)
+            batch.append((f, idx))
+            f += direction
+        if not batch:
+            self.status_line.setText("没有需要传播的帧（相邻帧该点已可信或已人工修正）")
+            return 0
+        self._undo_stack.append(batch)
+        self._pose_dirty = True
+        which = "后续" if direction > 0 else "之前"
+        self.label_pose.set_value(f"已传播 {len(batch)} 帧（未保存）")
+        self.status_line.setText(
+            f"{KEYPOINT_LABELS_CN[idx]} 修正量已传播到{which} {len(batch)} 帧"
+            f"（帧 {batch[0][0]}–{batch[-1][0]}）"
+        )
+        self._show_frame()
+        return len(batch)
+
     def undo_correction(self) -> None:
-        """撤销最近一次单点修正：从 kp.auto 恢复自动原值。"""
+        """撤销最近一批修正（单点拖动 = 一批一帧；传播 = 一批多帧整批回退）。"""
         if not self._undo_stack or self._pose_frames is None:
             return
-        frame_pos, kp_idx = self._undo_stack.pop()
-        kp = self._pose_frames[frame_pos].keypoints[kp_idx]
-        if kp.manual and kp.auto is not None:
-            kp.x = kp.auto["x"]
-            kp.y = kp.auto["y"]
-            kp.visibility = kp.auto["visibility"]
-            kp.manual = False
-            kp.auto = None
+        batch = self._undo_stack.pop()
+        for frame_pos, kp_idx in batch:
+            if not (0 <= frame_pos < len(self._pose_frames)):
+                continue
+            kp = self._pose_frames[frame_pos].keypoints[kp_idx]
+            if kp.manual and kp.auto is not None:
+                kp.x = kp.auto["x"]
+                kp.y = kp.auto["y"]
+                kp.visibility = kp.auto["visibility"]
+                kp.manual = False
+                kp.auto = None
         self._pose_dirty = True
-        self._frame_pos = frame_pos
+        self._frame_pos = batch[0][0]
         self.slider.blockSignals(True)
-        self.slider.setValue(frame_pos)
+        self.slider.setValue(self._frame_pos)
         self.slider.blockSignals(False)
-        self.label_pose.set_value("已撤销（未保存）")
+        self.label_pose.set_value(
+            f"已撤销 {len(batch)} 帧（未保存）" if len(batch) > 1 else "已撤销（未保存）"
+        )
         self._show_frame()
 
     def save_pose(self) -> bool:

@@ -1,8 +1,10 @@
 """审核回放器：素材帧读取（ClipPlayer）+ 骨架叠加显示与拖动修正（PlayerWidget）。
 
-骨架置信度着色（数据可视化叠加层，绘制在素材画面上，属预览原貌的一部分）：
-高 ≥0.7 系统绿 / 中 0.4–0.7 系统黄 / 低 <0.4 系统红（柔和语义色）。
-手动修正关键点显示为方框标记（对应契约 manual 字段）。
+叠加层视觉规范：
+- 连线按身体侧着色（左橙 / 右蓝 / 中线灰）——快速区分左右肢体
+- 关键点十字按置信度着色（高 ≥0.7 绿 / 中 0.4–0.7 黄 / 低 <0.4 红）——定位错点
+- 悬停高亮 + 中文关节名标签——分清点对应的关节；手动修正点显示方框
+- 简化手部模式：隐藏 pinky/index/thumb 细节点（数据仍保留 33 点全量）
 """
 
 from __future__ import annotations
@@ -13,13 +15,13 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from app.pose import KEYPOINT_NAMES, PoseFrame, read_pose2d
+from app.pose import PoseFrame, read_pose2d
 from app.ui.preview import FrameView, gray_to_qimage
-from app.ui.theme import semantic_color
+from app.ui.theme import semantic_color, ui_font
 
 # BlazePose 33 点连线（MediaPipe POSE_CONNECTIONS，索引对齐 KEYPOINT_NAMES）
 POSE_CONNECTIONS = [
@@ -29,6 +31,24 @@ POSE_CONNECTIONS = [
     (11, 23), (12, 24), (23, 24), (23, 25), (24, 26), (25, 27), (26, 28),
     (27, 29), (28, 30), (29, 31), (30, 31), (27, 31), (28, 32),
 ]
+
+# 手部细节点（简化手部模式下隐藏：不绘制、不命中；数据仍保留 33 点全量）
+HAND_DETAIL_INDICES = frozenset({17, 18, 19, 20, 21, 22})  # 左右 pinky/index/thumb
+
+# 悬停/拖动提示用中文关节名（索引对齐 KEYPOINT_NAMES）
+KEYPOINT_LABELS_CN = [
+    "鼻", "左眼内", "左眼", "左眼外", "右眼内", "右眼", "右眼外",
+    "左耳", "右耳", "左嘴角", "右嘴角",
+    "左肩", "右肩", "左肘", "右肘", "左腕", "右腕",
+    "左小指", "右小指", "左食指", "右食指", "左拇指", "右拇指",
+    "左髋", "右髋", "左膝", "右膝", "左踝", "右踝",
+    "左脚跟", "右脚跟", "左脚尖", "右脚尖",
+]
+assert len(KEYPOINT_LABELS_CN) == 33
+
+# 身体侧分组（连线着色：左橙 / 右蓝 / 中线灰，快速区分左右肢体）
+_LEFT_SIDE = frozenset({1, 2, 3, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31})
+_RIGHT_SIDE = frozenset({4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32})
 
 
 def confidence_color(visibility: float) -> QColor:
@@ -110,19 +130,33 @@ class PlayerWidget(FrameView):
         super().__init__(parent)
         self._pose: PoseFrame | None = None
         self._show_pose = True
+        self._simplify_hands = False  # 简化手部：隐藏细节点（仅手腕可编辑）
         self._drag_kp: int | None = None
         self._drag_pos: tuple[float, float] | None = None  # 拖拽中的归一化坐标
+        self._hover_kp: int | None = None  # 悬停高亮的关键点（显示中文关节名）
+        self.setMouseTracking(True)  # 悬停识别关节（不按下也跟踪）
 
     def set_frame_data(self, frame: np.ndarray | None, pose: PoseFrame | None = None) -> None:
         self.set_image(gray_to_qimage(frame) if frame is not None else None)
         self._pose = pose
         self._drag_kp = None
         self._drag_pos = None
+        self._hover_kp = None
         self.update()
 
     def set_pose_visible(self, visible: bool) -> None:
         self._show_pose = visible
         self.update()
+
+    def set_simplify_hands(self, on: bool) -> None:
+        """简化手部：隐藏 pinky/index/thumb 细节点（数据仍保留 33 点全量）。"""
+        self._simplify_hands = on
+        if on and self._hover_kp in HAND_DETAIL_INDICES:
+            self._hover_kp = None
+        self.update()
+
+    def _hidden(self, idx: int) -> bool:
+        return self._simplify_hands and idx in HAND_DETAIL_INDICES
 
     # ---- 拖动修正 ----
 
@@ -139,6 +173,18 @@ class PlayerWidget(FrameView):
         if self._drag_kp is not None:
             self._drag_pos = self._norm_at(event.position())
             self.update()
+        elif self._pose is not None and self._show_pose and self._image is not None:
+            # 悬停识别关节：最近的可见关键点高亮 + 中文名（错位修正前先看清点是谁）
+            idx = self._hit_keypoint(event.position())
+            if idx != self._hover_kp:
+                self._hover_kp = idx
+                self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._hover_kp is not None:
+            self._hover_kp = None
+            self.update()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self._drag_kp is not None:
@@ -161,12 +207,22 @@ class PlayerWidget(FrameView):
         best_d = float(self.HIT_RADIUS_PX)
         iw, ih = self.image_size()
         for i, kp in enumerate(self._pose.keypoints):
+            if self._hidden(i):
+                continue
             w = self.image_to_widget(kp.x * iw, kp.y * ih)
             d = ((w.x() - pos.x()) ** 2 + (w.y() - pos.y()) ** 2) ** 0.5
             if d <= best_d:
                 best = i
                 best_d = d
         return best
+
+    def _connection_color(self, a: int, b: int) -> QColor:
+        """连线按身体侧着色：左橙 / 右蓝 / 中线灰（快速区分左右肢体）。"""
+        if a in _LEFT_SIDE and b in _LEFT_SIDE:
+            return semantic_color("orange")
+        if a in _RIGHT_SIDE and b in _RIGHT_SIDE:
+            return semantic_color("blue")
+        return semantic_color("fg_dim")
 
     # ---- 叠加绘制 ----
 
@@ -181,13 +237,16 @@ class PlayerWidget(FrameView):
                 return self.image_to_widget(self._drag_pos[0] * iw, self._drag_pos[1] * ih)
             return self.image_to_widget(kps[i].x * iw, kps[i].y * ih)
 
-        # 连线（取两端点较高置信度着色）
+        # 连线（按身体侧着色：左橙 / 右蓝 / 中线灰；简化手部时隐藏细节点连线）
         for a, b in POSE_CONNECTIONS:
-            vis = min(kps[a].visibility, kps[b].visibility)
-            painter.setPen(QPen(confidence_color(vis), 1))
+            if self._hidden(a) or self._hidden(b):
+                continue
+            painter.setPen(QPen(self._connection_color(a, b), 1))
             painter.drawLine(point_of(a), point_of(b))
-        # 关键点：十字 + 手动修正方框
+        # 关键点：十字（置信度着色）+ 手动修正方框
         for i, kp in enumerate(kps):
+            if self._hidden(i):
+                continue
             p = point_of(i)
             color = confidence_color(kp.visibility)
             painter.setPen(QPen(color, 1))
@@ -196,12 +255,28 @@ class PlayerWidget(FrameView):
             painter.drawLine(QPointF(p.x(), p.y() - arm), QPointF(p.x(), p.y() + arm))
             if kp.manual:
                 painter.drawRect(int(p.x() - 5), int(p.y() - 5), 10, 10)
-        # 拖拽中的点高亮圈
+        # 悬停高亮：白色实线圈 + 中文关节名标签（识别点对应的关节）
+        if self._hover_kp is not None and self._drag_kp is None:
+            self._draw_kp_highlight(painter, point_of(self._hover_kp), self._hover_kp, dashed=False)
+        # 拖拽中的点高亮圈 + 中文关节名
         if self._drag_kp is not None and self._drag_pos is not None:
-            p = point_of(self._drag_kp)
-            painter.setPen(QPen(QColor(255, 255, 255), 1.5, Qt.PenStyle.DashLine))
-            painter.drawEllipse(p, 8, 8)
-            painter.drawText(
-                p + QPointF(10, -10),
-                f"{KEYPOINT_NAMES[self._drag_kp]}",
-            )
+            self._draw_kp_highlight(painter, point_of(self._drag_kp), self._drag_kp, dashed=True)
+
+    def _draw_kp_highlight(self, painter: QPainter, p: QPointF, idx: int, dashed: bool) -> None:
+        painter.setPen(QPen(QColor(255, 255, 255), 1.5,
+                            Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(p, 8, 8)
+        label = KEYPOINT_LABELS_CN[idx]
+        painter.setFont(ui_font(12, bold=True))
+        metrics = painter.fontMetrics()
+        w = metrics.horizontalAdvance(label)
+        h = metrics.height()
+        # 标签默认右上，贴近右/上边缘时翻转到左下，避免画出控件外
+        lx = p.x() + 12 if p.x() + 12 + w + 12 <= self.width() else p.x() - 12 - w
+        ly = p.y() - 12 if p.y() - 12 - h >= 0 else p.y() + 12 + h
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 140))
+        painter.drawRoundedRect(QRectF(lx - 5, ly - h + 2, w + 10, h + 4), 5, 5)
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(QRectF(lx, ly - h + 2, w, h), Qt.AlignmentFlag.AlignCenter, label)

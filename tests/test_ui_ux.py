@@ -355,3 +355,98 @@ def test_pose_eye_options(qapp, settings, store):
     items = [page.combo_pose_eye.itemText(i) for i in range(page.combo_pose_eye.count())]
     assert items == ["左目", "右目", "双目"]
     page.shutdown()
+
+
+# ---- 骨架标注效率（2026-10-12：关节识别 / 连续错位传播 / 手部简化）----
+
+
+def _stub_pose_frames(count: int):
+    from app.pose import StubPoseEstimator
+
+    est = StubPoseEstimator()
+    return [est.estimate(make_frame(30), i, i / FPS * 1000.0) for i in range(count)]
+
+
+def test_propagate_correction_stops_on_recovery_and_undo_batch(qapp, settings, store):
+    """连续错位一键传播：低置信帧应用偏移量，自动恢复可信即停，整批一次撤销。"""
+    record = _write_test_clip(store)
+    page = ReviewPage(settings, store)
+    page.load_record(record["session_id"])
+    page._pose_frames = _stub_pose_frames(record["frame_count"])  # 6 帧
+    # 模拟连续错位：帧 2、3 的左腕（15）跟踪丢失（低置信），帧 4 恢复
+    for f in (2, 3):
+        page._pose_frames[f].keypoints[15].visibility = 0.2
+    page._frame_pos = 1
+    page.correct_keypoint(15, 0.50, 0.50)
+    assert page.propagate_correction(1) == 2
+    for f in (2, 3):
+        kp = page._pose_frames[f].keypoints[15]
+        assert kp.manual and kp.auto is not None
+    assert page._pose_frames[4].keypoints[15].manual is False  # 恢复可信即停
+    # 整批一次撤销：两帧都回退
+    page.undo_correction()
+    for f in (2, 3):
+        kp = page._pose_frames[f].keypoints[15]
+        assert kp.manual is False and kp.visibility == 0.2
+    # 无修正源时传播为空操作
+    page._last_corrected_kp = None
+    assert page.propagate_correction(1) == 0
+    page.shutdown()
+
+
+def test_propagate_correction_stops_at_manual_frame(qapp, settings, store):
+    """传播不越过人工修正帧（人工边界优先）。"""
+    record = _write_test_clip(store)
+    page = ReviewPage(settings, store)
+    page.load_record(record["session_id"])
+    page._pose_frames = _stub_pose_frames(record["frame_count"])
+    for f in (2, 3, 4):
+        page._pose_frames[f].keypoints[15].visibility = 0.2
+    # 帧 3 已是人工帧
+    page._pose_frames[3].correct(15, 0.1, 0.1)
+    page._frame_pos = 1
+    page.correct_keypoint(15, 0.50, 0.50)
+    assert page.propagate_correction(1) == 1  # 只传播到帧 2，帧 3 人工帧停止
+    assert page._pose_frames[2].keypoints[15].manual is True
+    kp3 = page._pose_frames[3].keypoints[15]
+    assert (kp3.x, kp3.y) == (0.1, 0.1)  # 人工帧未被覆盖
+    page.shutdown()
+
+
+def test_hover_identifies_keypoint_and_simplify_hands(qapp):
+    """悬停显示关节名（_hover_kp 命中）；简化手部后细节点不命中、渲染不崩。"""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    from app.pose import StubPoseEstimator
+    from app.ui.player import HAND_DETAIL_INDICES, PlayerWidget
+
+    w = PlayerWidget()
+    w.resize(640, 400)
+    w.show()
+    frame = make_frame(30, (200, 320))
+    pose = StubPoseEstimator().estimate(frame, 0, 0.0)
+    w.set_frame_data(frame, pose)
+    iw, ih = w.image_size()
+
+    def move_to(kp_idx: int):
+        kp = pose.keypoints[kp_idx]
+        pos = w.image_to_widget(kp.x * iw, kp.y * ih)
+        ev = QMouseEvent(
+            QEvent.Type.MouseMove, QPointF(pos),
+            Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        w.mouseMoveEvent(ev)
+
+    move_to(15)
+    assert w._hover_kp == 15
+    move_to(25)
+    assert w._hover_kp == 25
+
+    # 简化手部：细节点（17 左小指）不再命中
+    w.set_simplify_hands(True)
+    move_to(17)
+    assert w._hover_kp not in HAND_DETAIL_INDICES
+    w.grab()  # 渲染冒烟：悬停 + 简化 + 骨架叠加不崩
+    w.close()
