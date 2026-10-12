@@ -484,3 +484,48 @@ def test_propagate_covers_high_visibility_stuck_point(qapp, settings, store):
     assert page._pose_frames[4].keypoints[15].manual is False  # 恢复帧不动
     assert page._frame_pos == 3  # 传播后跳到末帧便于检查
     page.shutdown()
+
+
+def test_repropagate_after_manual_adjust(qapp, settings, store):
+    """实机回归（2026-10-12 二次）：传播 → 人工微调其中一帧 → 再次传播，
+    之前机器传播的下游帧必须能被新偏移量覆盖（不能被自己的传播结果挡住）。
+
+    规则：机器传播的帧可再传播；人工拖动的帧成为边界（传播到此即停）。
+    """
+    record = _write_test_clip(store)
+    page = ReviewPage(settings, store)
+    page.load_record(record["session_id"])
+    page._pose_frames = _stub_pose_frames(record["frame_count"])  # 6 帧（0-5）
+    # 帧 2/3/4 跟踪丢失（低置信），帧 5 恢复（高置信 + 跳离）
+    for f in (2, 3, 4):
+        page._pose_frames[f].keypoints[15].visibility = 0.2
+    src = page._pose_frames[1].keypoints[15]
+    kp5 = page._pose_frames[5].keypoints[15]
+    kp5.visibility = 0.9
+    kp5.x, kp5.y = src.x + 0.3, src.y + 0.3
+
+    # 第一轮：帧 1 修正 → 传播到帧 2/3/4
+    page._frame_pos = 1
+    page.correct_keypoint(15, 0.50, 0.50)
+    assert page.propagate_correction(1) == 3
+    assert page._frame_pos == 4  # 跳到传播末帧
+
+    # 人工微调帧 4（传播得不对），帧 4 转为人工边界
+    page.correct_keypoint(15, 0.60, 0.60)
+    assert (4, 15) not in page._propagated
+
+    # 第二轮：从帧 4 向后传播——下游（帧 5 恢复）即停，无事发生
+    assert page.propagate_correction(1) == 0
+
+    # 回到帧 2 人工微调后向后传播：帧 3 是机器传播帧 → 用新偏移量覆盖
+    page._frame_pos = 2
+    page.correct_keypoint(15, 0.55, 0.55)
+    assert page.propagate_correction(1) == 1  # 只覆盖帧 3；帧 4 是人工边界
+    kp3 = page._pose_frames[3].keypoints[15]
+    src2 = page._pose_frames[2].keypoints[15]
+    delta_x = 0.55 - src2.auto["x"]
+    assert kp3.manual is True
+    assert abs(kp3.x - (kp3.auto["x"] + delta_x)) < 1e-9  # 基于原始自动值 + 新偏移量
+    kp4 = page._pose_frames[4].keypoints[15]
+    assert (kp4.x, kp4.y) == (0.60, 0.60)  # 人工帧未被覆盖
+    page.shutdown()

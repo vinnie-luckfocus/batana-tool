@@ -172,6 +172,9 @@ class ReviewPage(QWidget):
         # 撤销栈：每次修正/传播为一批（传播一批可含多帧同点，一次撤销整批回退）
         self._undo_stack: list[list[tuple[int, int]]] = []  # 批 = [(帧位置, 关键点索引), ...]
         self._last_corrected_kp: int | None = None  # 最近修正的关键点（传播修正的源）
+        # 机器传播产生的点（帧, 点索引）：可被再次传播覆盖；人工拖动后出集合成为边界。
+        # 仅内存态（载入素材/重跑骨架时清空），不落盘——pose2d 契约只有 manual 标记
+        self._propagated: set[tuple[int, int]] = set()
         self._pose_dirty = False
         self._trim_dirty = False
         self._pose_worker: _PoseWorker | None = None
@@ -471,6 +474,8 @@ class ReviewPage(QWidget):
         )
         self._load_pose_for_eye(self._current_eye())
         self._undo_stack.clear()
+        self._propagated.clear()
+        self._last_corrected_kp = None
         self._pose_dirty = False
         self._trim_dirty = False
         trim = record["trim"]
@@ -689,6 +694,8 @@ class ReviewPage(QWidget):
         if self._pose_worker is not None:
             self._pose_model = self._pose_worker.model_name
         self._pose_fps = self._record["fps"] if self._record else 0.0
+        self._propagated.clear()  # 新骨架全量替换，传播记录失效
+        self._last_corrected_kp = None
         self._pose_dirty = True
         counts = "/".join(f"{e}:{len(f)}F" for e, f in frames_by_eye.items())
         # 标明推理引擎：Stub 是假骨架（仅供界面测试），防止误当真实标注
@@ -732,12 +739,16 @@ class ReviewPage(QWidget):
         self.settings.save()
 
     def correct_keypoint(self, kp_idx: int, x: float, y: float) -> None:
-        """拖动落点：调核心 PoseFrame.correct 落账（保留自动原值）。"""
+        """拖动落点：调核心 PoseFrame.correct 落账（保留自动原值）。
+
+        人工拖动后该点退出传播集合——成为真正的边界，后续传播到此即停。
+        """
         if self._pose_frames is None or not (0 <= self._frame_pos < len(self._pose_frames)):
             return
         frame = self._pose_frames[self._frame_pos]
         frame.correct(kp_idx, x, y)
         self._undo_stack.append([(self._frame_pos, kp_idx)])
+        self._propagated.discard((self._frame_pos, kp_idx))
         self._last_corrected_kp = kp_idx
         self._pose_dirty = True
         self.label_pose.set_value("已修正（未保存）")
@@ -746,10 +757,10 @@ class ReviewPage(QWidget):
     def propagate_correction(self, direction: int = 1) -> int:
         """把最近修正点的偏移量向后续/之前帧传播（连续错位一键修正）。
 
-        停止条件（实机取证修正）：仅 visibility 阈值不可用——MediaPipe 对
-        错位点也报 0.8+ 高置信。真正的恢复信号是"自动点脱离原错位簇"：
-        错位/卡住的点位置几乎不动，恢复时才跳回真实轨迹。故停止条件 =
-        人工帧，或（高置信 ≥0.5 且与错位源点位移 > 容差）。
+        覆盖规则：机器传播产生的帧可被再次传播覆盖（基于原始自动值 + 新偏移量）；
+        人工拖动的帧是边界，传播到此即停。
+        恢复判定一律基于原始自动值（传播帧的 x/visibility 已被改写）：
+        高置信 ≥0.5 且与错位源点 L1 位移 > 容差 → 检测已恢复，停止。
         整批一次撤销可回退；传播后视图跳到最后一帧以便继续。返回传播帧数。
         """
         if self._pose_frames is None or self._last_corrected_kp is None:
@@ -767,12 +778,18 @@ class ReviewPage(QWidget):
         f = self._frame_pos + direction
         while 0 <= f < n:
             kp = self._pose_frames[f].keypoints[idx]
-            if kp.manual:
-                break  # 人工帧不覆盖（人工边界优先）
-            moved = abs(kp.x - ax) + abs(kp.y - ay)
-            if kp.visibility >= 0.5 and moved > self.PROPAGATE_RECOVER_TOL:
-                break  # 高置信且脱离错位簇 = 自动检测已恢复
-            self._pose_frames[f].correct(idx, kp.x + dx, kp.y + dy)
+            if kp.manual and (f, idx) not in self._propagated:
+                break  # 真人工帧：人工边界优先，不覆盖
+            # 原始自动值（恢复判定与偏移基准都以此为准）
+            if kp.manual and kp.auto is not None:
+                ox, oy, ovis = kp.auto["x"], kp.auto["y"], kp.auto["visibility"]
+            else:
+                ox, oy, ovis = kp.x, kp.y, kp.visibility
+            moved = abs(ox - ax) + abs(oy - ay)
+            if ovis >= 0.5 and moved > self.PROPAGATE_RECOVER_TOL:
+                break  # 检测已恢复（跳出错位簇）
+            self._pose_frames[f].correct(idx, ox + dx, oy + dy)
+            self._propagated.add((f, idx))
             batch.append((f, idx))
             f += direction
         if not batch:
@@ -809,6 +826,7 @@ class ReviewPage(QWidget):
                 kp.visibility = kp.auto["visibility"]
                 kp.manual = False
                 kp.auto = None
+            self._propagated.discard((frame_pos, kp_idx))
         self._pose_dirty = True
         self._frame_pos = batch[0][0]
         self.slider.blockSignals(True)
