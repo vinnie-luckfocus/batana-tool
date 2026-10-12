@@ -61,6 +61,7 @@ batana-core 的姿态/轨迹模型需要大量带标注的挥棒素材（M1.5：
 
 ### F7 骨架自动标注
 - MediaPipe Pose（33 关键点，对齐 batana-core pose2d 拓扑与顺序约定），逐帧推理，置信度随帧保存
+- 模型工件归属 batana-core（models/files/ 本地缓存 + models/registry.yaml 登记 uri/sha256）；设置页可覆盖路径，留空自动探测 core 仓；无模型/无 mediapipe 时显式提示并回退 Stub（假骨架仅供界面测试，界面标注引擎名）
 - 可对左目、右目或双目同时推理（双目为 3D 重建准备）
 - 推理在后台线程跑，不阻塞采集
 

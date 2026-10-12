@@ -46,6 +46,16 @@ def resolve_core_repo(configured: str = "") -> Path | None:
     return None
 
 
+def find_core_repo_dir(configured: str = "") -> Path | None:
+    """解析 batana-core 仓目录：仅要求目录存在（不要求校验器），供模型工件等资源定位。"""
+    candidates = [Path(configured)] if configured else []
+    candidates += _CORE_REPO_CANDIDATES
+    for c in candidates:
+        if (c / "models").is_dir():
+            return c
+    return None
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 

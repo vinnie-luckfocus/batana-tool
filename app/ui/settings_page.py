@@ -153,7 +153,7 @@ class SettingsPage(QWidget):
         form.addRow(label("存储根目录"), dir_host)
 
         self.edit_pose_model = QLineEdit()
-        self.edit_pose_model.setPlaceholderText("留空 = StubPoseEstimator")
+        self.edit_pose_model.setPlaceholderText("留空 = 自动探测 batana-core/models/files/*.task")
         form.addRow(label("POSE 模型文件"), self.edit_pose_model)
 
         self.edit_core_repo = QLineEdit()

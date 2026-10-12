@@ -32,7 +32,7 @@ from app.session import (
     export_session,
     validate_session_builtin,
 )
-from app.session.export import resolve_core_repo, validate_with_core
+from app.session.export import find_core_repo_dir, resolve_core_repo, validate_with_core
 from app.ui.player import ClipPlayer, PlayerWidget
 from app.ui.settings import AppSettings
 from app.ui.theme import mono_font, ui_font
@@ -45,6 +45,19 @@ MEDIAPIPE_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
     "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
 )
+
+
+def _discover_pose_model(settings: AppSettings) -> str:
+    """姿态模型解析：设置页路径优先；留空时自动探测 batana-core 仓
+    models/files/*.task（模型工件归属 core，tool 只引用，见 core models/registry.yaml）。"""
+    if settings.pose_model_path:
+        return settings.pose_model_path
+    repo = find_core_repo_dir(settings.core_repo_path)
+    if repo is not None:
+        found = sorted((repo / "models" / "files").glob("*.task"))
+        if found:
+            return str(found[0])
+    return ""
 
 # M2 骨架目选择：下拉文案 → 目列表（双目顺序固定先左后右）
 _POSE_EYE_OPTIONS = [("左目", ["left"]), ("右目", ["right"]), ("双目", ["left", "right"])]
@@ -589,28 +602,41 @@ class ReviewPage(QWidget):
     # ---- 骨架 ----
 
     def _make_estimator(self) -> PoseEstimator | None:
-        """按设置构建估计器：配置 MediaPipe 模型优先，缺失时提示下载并回退 Stub。"""
+        """按设置构建估计器：配置路径 → 默认模型目录自动探测 → Stub 兜底（明确提示）。
+
+        默认模型目录 ~/.batana-tool/models/*.task：设置留空时自动探测，
+        免去手动配置；Stub 仅作测试兜底，跑真实素材时显式告知。
+        """
         from app.pose import MediaPipePoseEstimator
 
-        model_path = self.settings.pose_model_path
-        if model_path:
-            if not Path(model_path).is_file():
-                QMessageBox.warning(
-                    self, "模型文件缺失",
-                    f"MediaPipe 模型文件不存在：\n{model_path}\n\n"
-                    f"请下载 pose_landmarker_lite.task：\n{MEDIAPIPE_MODEL_URL}\n\n"
-                    "本次将使用 StubPoseEstimator（确定性测试骨架）代替。",
-                )
-            elif MediaPipePoseEstimator.is_available():
-                try:
-                    return MediaPipePoseEstimator(model_path)
-                except Exception as e:
-                    QMessageBox.warning(self, "骨架初始化失败", f"{e}\n\n回退到 StubPoseEstimator。")
-            else:
-                QMessageBox.warning(
-                    self, "mediapipe 不可用",
-                    "未安装 mediapipe（pip install -e \".[pose]\"），回退到 StubPoseEstimator。",
-                )
+        model_path = _discover_pose_model(self.settings)
+        if not model_path:
+            QMessageBox.warning(
+                self, "未配置姿态模型",
+                "未找到 MediaPipe 姿态模型，本次将使用 StubPoseEstimator"
+                "（假骨架，仅供界面测试，不能用于训练素材）。\n\n"
+                "请下载 pose_landmarker 模型放入 batana-core 仓：\n"
+                "models/files/（并在 models/registry.yaml 登记）\n"
+                f"或在设置页指定模型文件路径。\n下载地址：\n{MEDIAPIPE_MODEL_URL}",
+            )
+        elif not Path(model_path).is_file():
+            QMessageBox.warning(
+                self, "模型文件缺失",
+                f"MediaPipe 模型文件不存在：\n{model_path}\n\n"
+                f"请下载 pose_landmarker 模型：\n{MEDIAPIPE_MODEL_URL}\n\n"
+                "本次将使用 StubPoseEstimator（假骨架，仅供界面测试）代替。",
+            )
+        elif not MediaPipePoseEstimator.is_available():
+            QMessageBox.warning(
+                self, "mediapipe 不可用",
+                "未安装 mediapipe（pip install -e \".[pose]\"），"
+                "本次将使用 StubPoseEstimator（假骨架，仅供界面测试）代替。",
+            )
+        else:
+            try:
+                return MediaPipePoseEstimator(model_path)
+            except Exception as e:
+                QMessageBox.warning(self, "骨架初始化失败", f"{e}\n\n回退到 StubPoseEstimator。")
         return StubPoseEstimator()
 
     def run_pose(self) -> None:
@@ -642,7 +668,9 @@ class ReviewPage(QWidget):
         self._pose_fps = self._record["fps"] if self._record else 0.0
         self._pose_dirty = True
         counts = "/".join(f"{e}:{len(f)}F" for e, f in frames_by_eye.items())
-        self.label_pose.set_value(f"已跑 {counts}（未保存）")
+        # 标明推理引擎：Stub 是假骨架（仅供界面测试），防止误当真实标注
+        engine = "Stub 假骨架" if "stub" in self._pose_model.lower() else "MediaPipe"
+        self.label_pose.set_value(f"已跑 {counts}（{engine}，未保存）")
         self._show_frame()
 
     def _on_pose_failed(self, message: str) -> None:
