@@ -170,11 +170,12 @@ class ReviewPage(QWidget):
         self._pose_model = ""
         self._pose_fps = 0.0
         # 撤销栈：每次修正/传播为一批（传播一批可含多帧同点，一次撤销整批回退）
-        self._undo_stack: list[list[tuple[int, int]]] = []  # 批 = [(帧位置, 关键点索引), ...]
+        self._undo_stack: list[list[tuple[int, int, str]]] = []  # 批 = [(帧位置, 关键点索引, 目), ...]
         self._last_corrected_kp: int | None = None  # 最近修正的关键点（传播修正的源）
-        # 机器传播产生的点（帧, 点索引）：可被再次传播覆盖；人工拖动后出集合成为边界。
+        self._last_corrected_eye = "left"           # 最近修正的目（双目并排修正时跟随）
+        # 机器传播产生的点（帧, 点索引, 目）：可被再次传播覆盖；人工拖动后出集合成为边界。
         # 仅内存态（载入素材/重跑骨架时清空），不落盘——pose2d 契约只有 manual 标记
-        self._propagated: set[tuple[int, int]] = set()
+        self._propagated: set[tuple[int, int, str]] = set()
         self._pose_dirty = False
         self._trim_dirty = False
         self._pose_worker: _PoseWorker | None = None
@@ -243,7 +244,9 @@ class ReviewPage(QWidget):
         body.addLayout(right, stretch=3)
 
         self.player = PlayerWidget()
-        self.player.keypoint_moved.connect(self.correct_keypoint)
+        self.player.keypoint_moved.connect(
+            lambda eye, idx, x, y: self.correct_keypoint(idx, x, y, eye=eye)
+        )
         right.addWidget(card_widget(self.player), stretch=1)
 
         # 走带控制：控件等高、垂直居中一线；左播放组 / 中进度条弹性 / 右信息组
@@ -270,7 +273,7 @@ class ReviewPage(QWidget):
         self.combo_speed.setCurrentIndex(2)  # 默认 1×
         self.combo_speed.currentIndexChanged.connect(self._on_speed_changed)
         self.combo_eye = QComboBox()
-        self.combo_eye.addItems(["左目", "右目"])
+        self.combo_eye.addItems(["左目", "右目", "双目并排"])
         self.combo_eye.currentIndexChanged.connect(lambda _i: self._on_view_eye_changed())
         tp.addWidget(self.btn_play)
         tp.addWidget(self.btn_prev)
@@ -472,7 +475,14 @@ class ReviewPage(QWidget):
         self._player = ClipPlayer(
             self.store.root / record["clip_dir"], record["frame_count"], record["fps"]
         )
-        self._load_pose_for_eye(self._current_eye())
+        view_eye = self._current_eye()
+        if view_eye == "dual":
+            for e in ("left", "right"):
+                self._load_pose_for_eye(e)
+            self._pose_eye = "left"  # 双目视图下编辑目由拖动信号显式给出
+            self._pose_frames = self._pose_frames_by_eye.get("left")
+        else:
+            self._load_pose_for_eye(view_eye)
         self._undo_stack.clear()
         self._propagated.clear()
         self._last_corrected_kp = None
@@ -488,14 +498,22 @@ class ReviewPage(QWidget):
         return True
 
     def _load_pose_for_eye(self, eye: str) -> None:
-        """按目载入骨架：左目 pose2d.json（既有结构），右目 pose2d_right.json。"""
-        self._pose_frames_by_eye = {}
+        """按目载入骨架：左目 pose2d.json（既有结构），右目 pose2d_right.json。
+
+        内存优先：双目推理结果/另一目已载入的数据保留在 _pose_frames_by_eye，
+        切目只换指针，绝不清空字典（否则换目即串目/丢另一目未保存数据）。
+        """
         self._pose_eye = eye
+        if eye in self._pose_frames_by_eye:
+            self._pose_frames = self._pose_frames_by_eye[eye]
+            self.label_pose.set_value(f"已加载 {len(self._pose_frames)}F（{eye}）")
+            return
         path = pose_path_for_eye(self._player.clip_dir, eye)
         if path.is_file():
-            self._pose_model, self._pose_fps, self._pose_frames = read_pose2d(path)
-            self._pose_frames_by_eye[eye] = self._pose_frames
-            self.label_pose.set_value(f"已加载 {len(self._pose_frames)}F（{eye}）")
+            self._pose_model, self._pose_fps, frames = read_pose2d(path)
+            self._pose_frames_by_eye[eye] = frames
+            self._pose_frames = frames
+            self.label_pose.set_value(f"已加载 {len(frames)}F（{eye}）")
         else:
             self._pose_frames = None
             self.label_pose.set_value("未跑")
@@ -542,13 +560,25 @@ class ReviewPage(QWidget):
         self.list_clips.blockSignals(False)
 
     def _current_eye(self) -> str:
-        return "left" if self.combo_eye.currentIndex() == 0 else "right"
+        """查看目：左目 / 右目 / 双目并排（dual）。"""
+        return ("left", "right", "dual")[self.combo_eye.currentIndex()]
+
+    def _frames_for_eye(self, eye: str) -> list[PoseFrame] | None:
+        """目别 → 骨架帧列表（内存字典优先；兼容测试直设 _pose_frames）。"""
+        if eye in self._pose_frames_by_eye:
+            return self._pose_frames_by_eye[eye]
+        return self._pose_frames if eye == self._pose_eye else None
 
     def _on_view_eye_changed(self) -> None:
-        """切换查看目：载入该目已存骨架（当前有未保存修改时保留内存版本）。"""
-        if self._player is not None and not self._pose_dirty:
+        """切换查看目：单目切目即换该目骨架（含未保存修改，内存字典分目存放，
+        不存在串目）；双目并排显示左右目骨架，各自可修正。"""
+        if self._player is not None:
             eye = self._current_eye()
-            if eye != self._pose_eye:
+            if eye == "dual":
+                for e in ("left", "right"):
+                    if e not in self._pose_frames_by_eye:
+                        self._load_pose_for_eye(e)
+            elif eye != self._pose_eye:
                 self._load_pose_for_eye(eye)
         self._show_frame()
 
@@ -576,11 +606,23 @@ class ReviewPage(QWidget):
     def _show_frame(self) -> None:
         if self._player is None or self._record is None:
             return
-        gray = self._player.frame(self._frame_pos, self._current_eye())
-        pose = None
-        if self._pose_frames and 0 <= self._frame_pos < len(self._pose_frames):
-            pose = self._pose_frames[self._frame_pos]
-        self.player.set_frame_data(gray, pose)
+        eye = self._current_eye()
+
+        def pose_at(frames: list[PoseFrame] | None) -> PoseFrame | None:
+            if frames and 0 <= self._frame_pos < len(frames):
+                return frames[self._frame_pos]
+            return None
+
+        if eye == "dual":
+            self.player.set_frame_data_dual(
+                self._player.frame(self._frame_pos, "left"),
+                self._player.frame(self._frame_pos, "right"),
+                pose_at(self._frames_for_eye("left")),
+                pose_at(self._frames_for_eye("right")),
+            )
+        else:
+            gray = self._player.frame(self._frame_pos, eye)
+            self.player.set_frame_data(gray, pose_at(self._frames_for_eye(eye)))
         total = self._record["frame_count"]
         self.label_frame.setText(f"帧 {self._frame_pos:04d}/{total - 1:04d}")
 
@@ -712,10 +754,11 @@ class ReviewPage(QWidget):
         self.btn_run_pose.setEnabled(True)
 
     def rerun_current_frame(self) -> None:
-        """重跑当前帧骨架（覆盖该帧，含手动修正）。"""
-        if self._player is None or self._pose_frames is None:
+        """重跑当前帧骨架（覆盖该帧，含手动修正）；目别跟随最近编辑目。"""
+        frames = self._frames_for_eye(self._pose_eye)
+        if self._player is None or frames is None:
             return
-        if not (0 <= self._frame_pos < len(self._pose_frames)):
+        if not (0 <= self._frame_pos < len(frames)):
             return
         estimator = self._make_estimator()
         if estimator is None:
@@ -724,8 +767,11 @@ class ReviewPage(QWidget):
         if gray is None:
             return
         ts_ms = self._frame_pos / max(self._record["fps"], 1) * 1000.0
-        self._pose_frames[self._frame_pos] = estimator.estimate(gray, self._frame_pos, ts_ms)
+        frames[self._frame_pos] = estimator.estimate(gray, self._frame_pos, ts_ms)
         estimator.close()
+        # 该帧传播记录失效（骨架已被新推理覆盖）
+        for key in [k for k in self._propagated if k[0] == self._frame_pos and k[2] == self._pose_eye]:
+            self._propagated.discard(key)
         self._pose_dirty = True
         self.label_pose.set_value("单帧已重跑（未保存）")
         self._show_frame()
@@ -738,18 +784,23 @@ class ReviewPage(QWidget):
         self.settings.simplify_hands = on
         self.settings.save()
 
-    def correct_keypoint(self, kp_idx: int, x: float, y: float) -> None:
+    def correct_keypoint(self, kp_idx: int, x: float, y: float, eye: str | None = None) -> None:
         """拖动落点：调核心 PoseFrame.correct 落账（保留自动原值）。
 
         人工拖动后该点退出传播集合——成为真正的边界，后续传播到此即停。
+        eye 缺省为当前查看目（双目并排时由 PlayerWidget 信号显式给出）。
         """
-        if self._pose_frames is None or not (0 <= self._frame_pos < len(self._pose_frames)):
+        eye = eye or (self._pose_eye if self._pose_eye in ("left", "right") else "left")
+        frames = self._frames_for_eye(eye)
+        if frames is None or not (0 <= self._frame_pos < len(frames)):
             return
-        frame = self._pose_frames[self._frame_pos]
+        frame = frames[self._frame_pos]
         frame.correct(kp_idx, x, y)
-        self._undo_stack.append([(self._frame_pos, kp_idx)])
-        self._propagated.discard((self._frame_pos, kp_idx))
+        self._undo_stack.append([(self._frame_pos, kp_idx, eye)])
+        self._propagated.discard((self._frame_pos, kp_idx, eye))
         self._last_corrected_kp = kp_idx
+        self._last_corrected_eye = eye
+        self._pose_eye = eye  # 最近编辑目（重跑单帧/保存标注归属）
         self._pose_dirty = True
         self.label_pose.set_value("已修正（未保存）")
         self._show_frame()
@@ -757,28 +808,31 @@ class ReviewPage(QWidget):
     def propagate_correction(self, direction: int = 1) -> int:
         """把最近修正点的偏移量向后续/之前帧传播（连续错位一键修正）。
 
+        作用于最近修正目（双目并排时拖动哪目就传播哪目）。
         覆盖规则：机器传播产生的帧可被再次传播覆盖（基于原始自动值 + 新偏移量）；
         人工拖动的帧是边界，传播到此即停。
         恢复判定一律基于原始自动值（传播帧的 x/visibility 已被改写）：
         高置信 ≥0.5 且与错位源点 L1 位移 > 容差 → 检测已恢复，停止。
         整批一次撤销可回退；传播后视图跳到最后一帧以便继续。返回传播帧数。
         """
-        if self._pose_frames is None or self._last_corrected_kp is None:
+        eye = self._last_corrected_eye
+        frames = self._frames_for_eye(eye)
+        if frames is None or self._last_corrected_kp is None:
             self.status_line.setText("请先拖动修正一个关键点，再传播")
             return 0
         idx = self._last_corrected_kp
-        src = self._pose_frames[self._frame_pos].keypoints[idx]
+        src = frames[self._frame_pos].keypoints[idx]
         if not src.manual or src.auto is None:
             self.status_line.setText("当前帧该点无修正量可传播（请先在本帧拖动修正）")
             return 0
         dx, dy = src.x - src.auto["x"], src.y - src.auto["y"]
         ax, ay = src.auto["x"], src.auto["y"]
-        n = len(self._pose_frames)
-        batch: list[tuple[int, int]] = []
+        n = len(frames)
+        batch: list[tuple[int, int, str]] = []
         f = self._frame_pos + direction
         while 0 <= f < n:
-            kp = self._pose_frames[f].keypoints[idx]
-            if kp.manual and (f, idx) not in self._propagated:
+            kp = frames[f].keypoints[idx]
+            if kp.manual and (f, idx, eye) not in self._propagated:
                 break  # 真人工帧：人工边界优先，不覆盖
             # 原始自动值（恢复判定与偏移基准都以此为准）
             if kp.manual and kp.auto is not None:
@@ -788,9 +842,9 @@ class ReviewPage(QWidget):
             moved = abs(ox - ax) + abs(oy - ay)
             if ovis >= 0.5 and moved > self.PROPAGATE_RECOVER_TOL:
                 break  # 检测已恢复（跳出错位簇）
-            self._pose_frames[f].correct(idx, ox + dx, oy + dy)
-            self._propagated.add((f, idx))
-            batch.append((f, idx))
+            frames[f].correct(idx, ox + dx, oy + dy)
+            self._propagated.add((f, idx, eye))
+            batch.append((f, idx, eye))
             f += direction
         if not batch:
             self.status_line.setText("没有需要传播的帧（相邻帧该点已恢复或已人工修正）")
@@ -798,9 +852,10 @@ class ReviewPage(QWidget):
         self._undo_stack.append(batch)
         self._pose_dirty = True
         which = "后续" if direction > 0 else "之前"
+        eye_label = "左目" if eye == "left" else "右目"
         self.label_pose.set_value(f"已传播 {len(batch)} 帧（未保存）")
         self.status_line.setText(
-            f"{KEYPOINT_LABELS_CN[idx]} 修正量已传播到{which} {len(batch)} 帧"
+            f"{eye_label}·{KEYPOINT_LABELS_CN[idx]} 修正量已传播到{which} {len(batch)} 帧"
             f"（帧 {batch[0][0]}–{batch[-1][0]}，已跳到末帧检查）"
         )
         # 跳到传播末帧：所见即所得，便于检查边界并继续下一段修正
@@ -813,20 +868,21 @@ class ReviewPage(QWidget):
 
     def undo_correction(self) -> None:
         """撤销最近一批修正（单点拖动 = 一批一帧；传播 = 一批多帧整批回退）。"""
-        if not self._undo_stack or self._pose_frames is None:
+        if not self._undo_stack:
             return
         batch = self._undo_stack.pop()
-        for frame_pos, kp_idx in batch:
-            if not (0 <= frame_pos < len(self._pose_frames)):
+        for frame_pos, kp_idx, eye in batch:
+            frames = self._frames_for_eye(eye)
+            if frames is None or not (0 <= frame_pos < len(frames)):
                 continue
-            kp = self._pose_frames[frame_pos].keypoints[kp_idx]
+            kp = frames[frame_pos].keypoints[kp_idx]
             if kp.manual and kp.auto is not None:
                 kp.x = kp.auto["x"]
                 kp.y = kp.auto["y"]
                 kp.visibility = kp.auto["visibility"]
                 kp.manual = False
                 kp.auto = None
-            self._propagated.discard((frame_pos, kp_idx))
+            self._propagated.discard((frame_pos, kp_idx, eye))
         self._pose_dirty = True
         self._frame_pos = batch[0][0]
         self.slider.blockSignals(True)

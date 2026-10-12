@@ -419,7 +419,7 @@ def test_propagate_correction_stops_at_manual_frame(qapp, settings, store):
 
 
 def test_hover_identifies_keypoint_and_simplify_hands(qapp):
-    """悬停显示关节名（_hover_kp 命中）；简化手部后细节点不命中、渲染不崩。"""
+    """悬停显示关节名（_hover 命中 (目, 点)）；简化手部后细节点不命中、渲染不崩。"""
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
 
@@ -445,15 +445,59 @@ def test_hover_identifies_keypoint_and_simplify_hands(qapp):
         w.mouseMoveEvent(ev)
 
     move_to(15)
-    assert w._hover_kp == 15
+    assert w._hover == ("left", 15)
     move_to(25)
-    assert w._hover_kp == 25
+    assert w._hover == ("left", 25)
 
     # 简化手部：细节点（17 左小指）不再命中
     w.set_simplify_hands(True)
     move_to(17)
-    assert w._hover_kp not in HAND_DETAIL_INDICES
+    assert w._hover is None or w._hover[1] not in HAND_DETAIL_INDICES
     w.grab()  # 渲染冒烟：悬停 + 简化 + 骨架叠加不崩
+    w.close()
+
+
+def test_dual_view_hit_test_and_drag_lock_eye(qapp):
+    """双目并排：命中按半幅归目；拖动锁定按下目（跨中线不串目）。"""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    from app.pose import StubPoseEstimator
+    from app.ui.player import PlayerWidget
+
+    w = PlayerWidget()
+    w.resize(1280, 400)
+    w.show()
+    left = make_frame(30, (200, 320))
+    right = make_frame(60, (200, 320))
+    est = StubPoseEstimator()
+    pose_l = est.estimate(left, 0, 0.0)
+    pose_r = est.estimate(right, 0, 0.0)
+    w.set_frame_data_dual(left, right, pose_l, pose_r)
+    assert w._dual is True
+    iw, ih = w.image_size()
+    assert iw == 640  # 双目拼接宽
+
+    def ev(t, pos, btn=Qt.MouseButton.NoButton):
+        return QMouseEvent(t, QPointF(pos), btn, btn, Qt.KeyboardModifier.NoModifier)
+
+    # 右目关键点 15 在拼接图中的控件坐标（右半幅偏移 iw/2）
+    kp = pose_r.keypoints[15]
+    pos_r = w.image_to_widget(iw / 2 + kp.x * iw / 2, kp.y * ih)
+    w.mouseMoveEvent(ev(QEvent.Type.MouseMove, pos_r))
+    assert w._hover == ("right", 15)
+
+    # 按下右目点 → 拖到左半幅 → 释放：落账仍是右目（锁目不串目）
+    moved = []
+    w.keypoint_moved.connect(lambda *a: moved.append(a))
+    w.mousePressEvent(ev(QEvent.Type.MouseButtonPress, pos_r, Qt.MouseButton.LeftButton))
+    w.mouseMoveEvent(ev(QEvent.Type.MouseMove, QPointF(50, 200)))
+    w.mouseReleaseEvent(ev(QEvent.Type.MouseButtonRelease, QPointF(50, 200), Qt.MouseButton.LeftButton))
+    assert len(moved) == 1
+    eye, idx, x, y = moved[0]
+    assert eye == "right" and idx == 15
+    assert 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0  # 右目目内归一化坐标
+    w.grab()  # 双目渲染冒烟
     w.close()
 
 
@@ -528,4 +572,29 @@ def test_repropagate_after_manual_adjust(qapp, settings, store):
     assert abs(kp3.x - (kp3.auto["x"] + delta_x)) < 1e-9  # 基于原始自动值 + 新偏移量
     kp4 = page._pose_frames[4].keypoints[15]
     assert (kp4.x, kp4.y) == (0.60, 0.60)  # 人工帧未被覆盖
+    page.shutdown()
+
+
+def test_switch_eye_with_unsaved_pose_shows_correct_eye(qapp, settings, store):
+    """换目串骨架回归（2026-10-12）：双目推理后（未保存 dirty）切换查看目，
+    必须显示对应目骨架；双目并排视图两目骨架同时传给播放器。"""
+    record = _write_test_clip(store)
+    page = ReviewPage(settings, store)
+    page.load_record(record["session_id"])
+    # 模拟双目推理完成：左右目骨架都在内存且未保存（dirty）
+    frames_l = _stub_pose_frames(record["frame_count"])
+    frames_r = _stub_pose_frames(record["frame_count"])
+    frames_r[0].keypoints[0].x = 0.111  # 标记右目数据
+    page._on_pose_done({"left": frames_l, "right": frames_r})
+    assert page._pose_dirty is True
+    # 切到右目：必须换成右目骨架（dirty 不得阻挡切目）
+    page.combo_eye.setCurrentIndex(1)
+    assert page._pose_eye == "right"
+    assert page._pose_frames[0].keypoints[0].x == 0.111
+    # 切回左目：恢复左目骨架（内存字典分目存放，不串目）
+    page.combo_eye.setCurrentIndex(0)
+    assert page._pose_frames[0].keypoints[0].x != 0.111
+    # 双目并排：两目骨架同时传给播放器
+    page.combo_eye.setCurrentIndex(2)
+    assert set(page.player._pose_by_eye.keys()) == {"left", "right"}
     page.shutdown()

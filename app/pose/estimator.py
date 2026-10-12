@@ -85,13 +85,18 @@ class MediaPipePoseEstimator:
             num_poses=1,
         )
         self._landmarker = vision.PoseLandmarker.create_from_options(options)
+        # VIDEO 模式要求时间戳单调递增：双目推理时第二目 ts 从 0 重启会报错。
+        # 内部喂给 MediaPipe 的 ts 做单调钳制；PoseFrame 仍记录真实片内时间戳
+        self._last_mp_ts_ms = -1
 
     def estimate(self, frame_gray: np.ndarray, frame_index: int, timestamp_ms: float) -> PoseFrame:
         import mediapipe as mp
 
         rgb = np.stack([frame_gray] * 3, axis=-1) if frame_gray.ndim == 2 else frame_gray
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
-        result = self._landmarker.detect_for_video(mp_image, int(timestamp_ms))
+        mp_ts = max(int(timestamp_ms), self._last_mp_ts_ms + 1)
+        self._last_mp_ts_ms = mp_ts
+        result = self._landmarker.detect_for_video(mp_image, mp_ts)
         kps: list[Keypoint] = []
         if result.pose_landmarks:
             landmarks = result.pose_landmarks[0]
