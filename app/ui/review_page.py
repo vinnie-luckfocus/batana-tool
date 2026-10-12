@@ -152,6 +152,10 @@ class _ExportWorker(QThread):
 class ReviewPage(QWidget):
     """素材审核：筛选列表、逐帧回放、骨架叠加与手动修正、修剪、三段式标记、批量导出。"""
 
+    # 传播修正的恢复判据容差（归一化 L1 位移）：自动点与错位源点位移超过
+    # 该值且高置信 → 判定检测已恢复，停止传播（错位/卡住的点位置几乎不动）
+    PROPAGATE_RECOVER_TOL = 0.08
+
     def __init__(self, settings: AppSettings, store: SessionStore, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.settings = settings
@@ -341,7 +345,7 @@ class ReviewPage(QWidget):
         self.btn_prop_prev = QPushButton("◀ 传播到前帧")
         self.btn_prop_next = QPushButton("传播到后帧 ▶")
         for b in (self.btn_prop_prev, self.btn_prop_next):
-            b.setToolTip("把最近修正点的偏移量逐帧传播，自动检测恢复可信或遇人工帧即停")
+            b.setToolTip("把最近修正点的偏移量逐帧传播；自动点脱离错位位置（恢复）或遇人工帧即停，传播后跳到末帧检查")
         self.btn_prop_prev.clicked.connect(lambda: self.propagate_correction(-1))
         self.btn_prop_next.clicked.connect(lambda: self.propagate_correction(1))
         prop_row.addWidget(self.btn_prop_prev)
@@ -742,9 +746,11 @@ class ReviewPage(QWidget):
     def propagate_correction(self, direction: int = 1) -> int:
         """把最近修正点的偏移量向后续/之前帧传播（连续错位一键修正）。
 
-        语义：从当前帧的修正量（manual - auto 原值）出发，逐帧应用到
-        自动检测不可信的帧（visibility < 0.5），遇到自动恢复可信或人工
-        修正过的帧即停。整批一次撤销可回退。返回传播帧数。
+        停止条件（实机取证修正）：仅 visibility 阈值不可用——MediaPipe 对
+        错位点也报 0.8+ 高置信。真正的恢复信号是"自动点脱离原错位簇"：
+        错位/卡住的点位置几乎不动，恢复时才跳回真实轨迹。故停止条件 =
+        人工帧，或（高置信 ≥0.5 且与错位源点位移 > 容差）。
+        整批一次撤销可回退；传播后视图跳到最后一帧以便继续。返回传播帧数。
         """
         if self._pose_frames is None or self._last_corrected_kp is None:
             self.status_line.setText("请先拖动修正一个关键点，再传播")
@@ -755,18 +761,22 @@ class ReviewPage(QWidget):
             self.status_line.setText("当前帧该点无修正量可传播（请先在本帧拖动修正）")
             return 0
         dx, dy = src.x - src.auto["x"], src.y - src.auto["y"]
+        ax, ay = src.auto["x"], src.auto["y"]
         n = len(self._pose_frames)
         batch: list[tuple[int, int]] = []
         f = self._frame_pos + direction
         while 0 <= f < n:
             kp = self._pose_frames[f].keypoints[idx]
-            if kp.manual or kp.visibility >= 0.5:
-                break  # 人工帧不覆盖；自动恢复可信即停
+            if kp.manual:
+                break  # 人工帧不覆盖（人工边界优先）
+            moved = abs(kp.x - ax) + abs(kp.y - ay)
+            if kp.visibility >= 0.5 and moved > self.PROPAGATE_RECOVER_TOL:
+                break  # 高置信且脱离错位簇 = 自动检测已恢复
             self._pose_frames[f].correct(idx, kp.x + dx, kp.y + dy)
             batch.append((f, idx))
             f += direction
         if not batch:
-            self.status_line.setText("没有需要传播的帧（相邻帧该点已可信或已人工修正）")
+            self.status_line.setText("没有需要传播的帧（相邻帧该点已恢复或已人工修正）")
             return 0
         self._undo_stack.append(batch)
         self._pose_dirty = True
@@ -774,8 +784,13 @@ class ReviewPage(QWidget):
         self.label_pose.set_value(f"已传播 {len(batch)} 帧（未保存）")
         self.status_line.setText(
             f"{KEYPOINT_LABELS_CN[idx]} 修正量已传播到{which} {len(batch)} 帧"
-            f"（帧 {batch[0][0]}–{batch[-1][0]}）"
+            f"（帧 {batch[0][0]}–{batch[-1][0]}，已跳到末帧检查）"
         )
+        # 跳到传播末帧：所见即所得，便于检查边界并继续下一段修正
+        self._frame_pos = batch[-1][0]
+        self.slider.blockSignals(True)
+        self.slider.setValue(self._frame_pos)
+        self.slider.blockSignals(False)
         self._show_frame()
         return len(batch)
 

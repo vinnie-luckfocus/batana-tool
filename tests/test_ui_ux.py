@@ -368,21 +368,26 @@ def _stub_pose_frames(count: int):
 
 
 def test_propagate_correction_stops_on_recovery_and_undo_batch(qapp, settings, store):
-    """连续错位一键传播：低置信帧应用偏移量，自动恢复可信即停，整批一次撤销。"""
+    """连续错位一键传播：错位帧应用偏移量；恢复（高置信且脱离错位簇）即停；整批一次撤销。"""
     record = _write_test_clip(store)
     page = ReviewPage(settings, store)
     page.load_record(record["session_id"])
     page._pose_frames = _stub_pose_frames(record["frame_count"])  # 6 帧
-    # 模拟连续错位：帧 2、3 的左腕（15）跟踪丢失（低置信），帧 4 恢复
+    # 模拟连续错位：帧 2、3 的左腕（15）跟踪丢失（低置信）
     for f in (2, 3):
         page._pose_frames[f].keypoints[15].visibility = 0.2
+    # 帧 4 恢复：高置信且位置跳离错位簇（位移 > 容差 0.08）
+    src = page._pose_frames[1].keypoints[15]
+    kp4 = page._pose_frames[4].keypoints[15]
+    kp4.visibility = 0.9
+    kp4.x, kp4.y = src.x + 0.3, src.y + 0.3
     page._frame_pos = 1
     page.correct_keypoint(15, 0.50, 0.50)
     assert page.propagate_correction(1) == 2
     for f in (2, 3):
         kp = page._pose_frames[f].keypoints[15]
         assert kp.manual and kp.auto is not None
-    assert page._pose_frames[4].keypoints[15].manual is False  # 恢复可信即停
+    assert page._pose_frames[4].keypoints[15].manual is False  # 恢复即停
     # 整批一次撤销：两帧都回退
     page.undo_correction()
     for f in (2, 3):
@@ -450,3 +455,32 @@ def test_hover_identifies_keypoint_and_simplify_hands(qapp):
     assert w._hover_kp not in HAND_DETAIL_INDICES
     w.grab()  # 渲染冒烟：悬停 + 简化 + 骨架叠加不崩
     w.close()
+
+
+def test_propagate_covers_high_visibility_stuck_point(qapp, settings, store):
+    """实机回归（2026-10-12）：MediaPipe 对错位点也报高置信（实测 vis 0.84-0.93），
+    传播停止条件不能只看置信度——高置信但位置卡在错位簇内仍要传播；
+    高置信且位移超容差（真正恢复）才停止。传播后视图跳到末帧。"""
+    record = _write_test_clip(store)
+    page = ReviewPage(settings, store)
+    page.load_record(record["session_id"])
+    page._pose_frames = _stub_pose_frames(record["frame_count"])  # 6 帧
+    ax = page._pose_frames[1].keypoints[15].x
+    ay = page._pose_frames[1].keypoints[15].y
+    # 帧 2、3：高置信但位置卡住（与源点几乎不动）= 高置信错位
+    for f in (2, 3):
+        kp = page._pose_frames[f].keypoints[15]
+        kp.visibility = 0.9
+        kp.x, kp.y = ax + 0.01, ay + 0.01
+    # 帧 4：高置信且跳离错位簇 = 检测恢复
+    kp4 = page._pose_frames[4].keypoints[15]
+    kp4.visibility = 0.9
+    kp4.x, kp4.y = ax + 0.3, ay + 0.3
+    page._frame_pos = 1
+    page.correct_keypoint(15, 0.50, 0.50)
+    assert page.propagate_correction(1) == 2  # 高置信但卡住的帧 2、3 仍被传播
+    assert page._pose_frames[2].keypoints[15].manual is True
+    assert page._pose_frames[3].keypoints[15].manual is True
+    assert page._pose_frames[4].keypoints[15].manual is False  # 恢复帧不动
+    assert page._frame_pos == 3  # 传播后跳到末帧便于检查
+    page.shutdown()
