@@ -475,6 +475,9 @@ class ReviewPage(QWidget):
         self._player = ClipPlayer(
             self.store.root / record["clip_dir"], record["frame_count"], record["fps"]
         )
+        # 换素材必须清空骨架缓存：内存字典按目缓存的是上一段素材的数据
+        self._pose_frames_by_eye = {}
+        self._pose_frames = None
         view_eye = self._current_eye()
         if view_eye == "dual":
             for e in ("left", "right"):

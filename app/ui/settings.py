@@ -24,9 +24,11 @@ class AppSettings:
 
     # F2 打击区 ROI（左目像素坐标）
     roi: list[int] | None = None
-    # F1 采集模式（HBVCAM-W2237-2 实测：SBS 1280x400@120 标称 / macOS 实测 75fps）
-    capture_width: int = 1280
-    capture_height: int = 400
+    # F1 采集模式：HBVCAM-W2237-2 双目模组，默认最高分辨率档位
+    # 2560x720@120（SBS，单目 1280x720）；模组该分辨率实测上限 60fps 时
+    # 由采集链路自动回退 2560x720@60（controller._FALLBACK_MODE）
+    capture_width: int = 2560
+    capture_height: int = 720
     capture_fps: float = 120.0
     pixel_format: str = "auto"  # auto / mono8 / yuy2 / mjpeg
     camera_index: int = 0
@@ -82,7 +84,21 @@ class AppSettings:
             for key, value in data.items():
                 if hasattr(settings, key):
                     setattr(settings, key, value)
+        settings._migrate()
         return settings
+
+    def _migrate(self) -> None:
+        """存量设置迁移：旧默认档位 1280x400@120（单目 640x400）升级为
+        2560x720@120（单目 1280x720）；ROI 为左目像素坐标，按比例缩放。"""
+        if (self.capture_width, self.capture_height, self.capture_fps) != (1280, 400, 120.0):
+            return
+        self.capture_width, self.capture_height = 2560, 720
+        if self.roi is not None:
+            fx, fy = 1280 / 640, 720 / 400  # 单目分辨率 640x400 → 1280x720
+            self.roi = [
+                int(self.roi[0] * fx), int(self.roi[1] * fy),
+                int(self.roi[2] * fx), int(self.roi[3] * fy),
+            ]
 
     def save(self, path: str | Path | None = None) -> Path:
         p = Path(path) if path else self._path

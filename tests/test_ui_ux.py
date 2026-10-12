@@ -598,3 +598,45 @@ def test_switch_eye_with_unsaved_pose_shows_correct_eye(qapp, settings, store):
     page.combo_eye.setCurrentIndex(2)
     assert set(page.player._pose_by_eye.keys()) == {"left", "right"}
     page.shutdown()
+
+
+def test_switch_clip_loads_that_clips_pose(qapp, settings, store):
+    """换素材换骨架回归（2026-10-12）：双目骨架缓存必须按素材隔离，
+    切换素材时不得沿用上一段的骨架。"""
+    from app.pose import StubPoseEstimator, write_pose2d
+
+    r1 = _write_test_clip(store)
+    r2 = _write_test_clip(store)
+    est = StubPoseEstimator()
+    frames1 = _stub_pose_frames(r1["frame_count"])
+    frames2 = _stub_pose_frames(r2["frame_count"])
+    frames2[0].keypoints[0].x = 0.222  # 标记 r2 骨架
+    write_pose2d(store.root / r1["clip_dir"] / "pose2d.json", est.model_name, FPS, frames1)
+    write_pose2d(store.root / r2["clip_dir"] / "pose2d.json", est.model_name, FPS, frames2)
+
+    page = ReviewPage(settings, store)
+    page.load_record(r1["session_id"])
+    assert page._pose_frames[0].keypoints[0].x != 0.222
+    page.load_record(r2["session_id"])
+    assert page._pose_frames[0].keypoints[0].x == 0.222  # 切到 r2 必须是 r2 的骨架
+    page.load_record(r1["session_id"])
+    assert page._pose_frames[0].keypoints[0].x != 0.222  # 切回 r1 恢复
+    page.shutdown()
+
+
+def test_settings_migrate_legacy_capture_mode(tmp_path):
+    """旧默认档位 1280x400@120 自动升级 2560x720@120，ROI 按单目分辨率缩放。"""
+    import json
+
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({
+        "capture_width": 1280, "capture_height": 400, "capture_fps": 120.0,
+        "roi": [160, 50, 320, 300],
+    }))
+    s = AppSettings.load(p)
+    assert (s.capture_width, s.capture_height, s.capture_fps) == (2560, 720, 120.0)
+    assert s.roi == [320, 90, 640, 540]  # 单目 640x400 → 1280x720（×2 / ×1.8）
+    # 已是新档位或协商回退档位：不迁移
+    p.write_text(json.dumps({"capture_width": 2560, "capture_height": 720, "capture_fps": 60.0}))
+    s2 = AppSettings.load(p)
+    assert (s2.capture_width, s2.capture_height, s2.capture_fps) == (2560, 720, 60.0)

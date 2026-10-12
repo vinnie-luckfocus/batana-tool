@@ -302,8 +302,17 @@ class SettingsPage(QWidget):
 
     def save(self) -> None:
         s = self.settings
+        old_res = (s.capture_width, s.capture_height)
         w, h = self.combo_resolution.currentText().split("x")
         s.capture_width, s.capture_height = int(w), int(h)
+        # 分辨率变更时 ROI（左目像素坐标）按比例缩放，避免框选错位
+        if (s.capture_width, s.capture_height) != old_res and s.roi is not None:
+            fx = s.capture_width / old_res[0]
+            fy = s.capture_height / old_res[1]
+            s.roi = [
+                int(s.roi[0] * fx), int(s.roi[1] * fy),
+                int(s.roi[2] * fx), int(s.roi[3] * fy),
+            ]
         s.capture_fps = float(self.spin_fps.value())
         s.pixel_format = self.combo_format.currentText()
         cam = self.combo_camera.currentData()

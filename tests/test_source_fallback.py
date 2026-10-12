@@ -10,13 +10,13 @@ from app.ui.settings import AppSettings
 
 
 class FakeFfmpegSource:
-    """模拟 ffmpeg 帧源：仅接受 1280x400@120，其余模式抛 RuntimeError。"""
+    """模拟 ffmpeg 帧源：仅接受 2560x720@60（高分辨率上限档位），其余模式抛 RuntimeError。"""
 
     opened_modes: list[tuple] = []
 
     def __init__(self, device, width, height, fps):
         FakeFfmpegSource.opened_modes.append((width, height, fps))
-        if (width, height, fps) != (1280, 400, 120.0):
+        if (width, height, fps) != (2560, 720, 60.0):
             raise RuntimeError("模式不被支持")
         self.frame_size = (width, height)
 
@@ -56,18 +56,18 @@ def test_bad_mode_auto_corrects_to_fallback(patch_sources, tmp_path):
     s.capture_width, s.capture_height = 2560, 800  # 旧版残留
     src = ctl.build_uvc_source(s)
     assert isinstance(src, FakeFfmpegSource)
-    assert src.frame_size == (1280, 400)
-    # 设置已回写纠正
-    assert (s.capture_width, s.capture_height, s.capture_fps) == (1280, 400, 120.0)
+    assert src.frame_size == (2560, 720)
+    # 设置已回写纠正（高分辨率优先，不回退低分辨率）
+    assert (s.capture_width, s.capture_height, s.capture_fps) == (2560, 720, 60.0)
     # 先试了配置模式，再试 fallback
     assert FakeFfmpegSource.opened_modes[0] == (2560, 800, 120.0)
-    assert FakeFfmpegSource.opened_modes[-1] == (1280, 400, 120.0)
+    assert FakeFfmpegSource.opened_modes[-1] == (2560, 720, 60.0)
 
 
 def test_good_mode_no_retry(patch_sources, tmp_path):
     s = AppSettings()
     s._path = tmp_path / "settings.json"
-    s.capture_width, s.capture_height = 1280, 400
+    s.capture_width, s.capture_height, s.capture_fps = 2560, 720, 60.0
     src = ctl.build_uvc_source(s)
     assert isinstance(src, FakeFfmpegSource)
     assert len(FakeFfmpegSource.opened_modes) == 1

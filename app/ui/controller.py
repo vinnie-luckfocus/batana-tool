@@ -41,9 +41,9 @@ _ENV_SAMPLE_STRIDE = 4  # 持续环境监测：每 4 帧采一次亮度样本（
 _SaveJob = tuple[Clip, list[BufferItem], float, "Roi | None"]
 
 
-# 模组已知主档位（HBVCAM-W2237-2）：旧设置里的假想规格（如 2560x800）
-# 协商失败时自动纠正到此模式，保证相机总能开起来
-_FALLBACK_MODE = (1280, 400, 120.0)
+# 模组已知高档位（HBVCAM-W2237-2）：2560x720 实测上限 60fps（AVFoundation），
+# 配置模式协商失败时自动纠正到此模式——保证高分辨率优先，不退到低分辨率
+_FALLBACK_MODE = (2560, 720, 60.0)
 
 
 def build_uvc_source(s: AppSettings) -> FrameSource:
