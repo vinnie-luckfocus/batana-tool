@@ -696,3 +696,77 @@ def test_settings_migrate_legacy_capture_mode(tmp_path):
     p.write_text(json.dumps({"capture_width": 2560, "capture_height": 720, "capture_fps": 60.0}))
     s2 = AppSettings.load(p)
     assert (s2.capture_width, s2.capture_height, s2.capture_fps) == (2560, 720, 60.0)
+
+
+# ---- 双目联动（2026-10-13：拖动一目另一目随动，传播双目同批）----
+
+
+def test_link_eyes_drag_couples_other_eye(qapp, settings, store):
+    """双目联动拖动：另一目同帧同点（自动点）施加相同位移，并入同一撤销批；
+    另一目已人工修正的点不动；开关关闭时不联动。"""
+    record = _write_test_clip(store)
+    page = ReviewPage(settings, store)
+    page.load_record(record["session_id"])
+    frames_l = _stub_pose_frames(record["frame_count"])
+    frames_r = _stub_pose_frames(record["frame_count"])
+    page._on_pose_done({"left": frames_l, "right": frames_r})
+    page._frame_pos = 1
+    l_kp = frames_l[1].keypoints[15]
+    r_kp = frames_r[1].keypoints[15]
+    lx, ly, rx, ry = l_kp.x, l_kp.y, r_kp.x, r_kp.y
+    page.correct_keypoint(15, lx + 0.1, ly + 0.05, eye="left")
+    assert abs(r_kp.x - (rx + 0.1)) < 1e-9 and abs(r_kp.y - (ry + 0.05)) < 1e-9
+    assert r_kp.manual is True
+    # 同一撤销批：一次撤销两目都回退
+    page.undo_correction()
+    assert l_kp.manual is False
+    assert r_kp.manual is False and abs(r_kp.x - rx) < 1e-9
+    # 另一目人工点不动（人工结果优先）
+    frames_r[2].correct(15, 0.3, 0.3)
+    page._frame_pos = 2
+    l2 = frames_l[2].keypoints[15]
+    page.correct_keypoint(15, l2.x + 0.1, l2.y, eye="left")
+    assert (frames_r[2].keypoints[15].x, frames_r[2].keypoints[15].y) == (0.3, 0.3)
+    # 开关关闭：不联动
+    settings.link_eyes = False
+    page._frame_pos = 3
+    r3x = frames_r[3].keypoints[15].x
+    l3 = frames_l[3].keypoints[15]
+    page.correct_keypoint(15, l3.x + 0.1, l3.y, eye="left")
+    assert abs(frames_r[3].keypoints[15].x - r3x) < 1e-9
+    page.shutdown()
+
+
+def test_link_eyes_propagate_covers_both_eyes(qapp, settings, store):
+    """双目联动传播：拖动一目后传播，联动目按自身偏移量一并传播，双目同批一次撤销。"""
+    record = _write_test_clip(store)
+    page = ReviewPage(settings, store)
+    page.load_record(record["session_id"])
+    frames_l = _stub_pose_frames(record["frame_count"])
+    frames_r = _stub_pose_frames(record["frame_count"])
+    for f in frames_r:  # 右目整体偏移一点（模拟双目视角差异）
+        f.keypoints[15].x += 0.02
+    page._on_pose_done({"left": frames_l, "right": frames_r})
+    # 两目帧 2、3 跟踪丢失，帧 4 恢复（高置信 + 跳离）
+    for frames in (frames_l, frames_r):
+        for f in (2, 3):
+            frames[f].keypoints[15].visibility = 0.2
+        src = frames[1].keypoints[15]
+        kp4 = frames[4].keypoints[15]
+        kp4.visibility = 0.9
+        kp4.x, kp4.y = src.x + 0.3, src.y + 0.3
+    page._frame_pos = 1
+    l1 = frames_l[1].keypoints[15]
+    page.correct_keypoint(15, l1.x + 0.1, l1.y + 0.1, eye="left")  # 联动修正右目帧 1
+    assert frames_r[1].keypoints[15].manual is True
+    assert page.propagate_correction(1) == 4  # 左目 2 帧 + 右目 2 帧
+    for frames in (frames_l, frames_r):
+        assert frames[2].keypoints[15].manual is True
+        assert frames[3].keypoints[15].manual is True
+        assert frames[4].keypoints[15].manual is False  # 恢复帧不动
+    # 双目同批：一次撤销两目传播全部回退
+    page.undo_correction()
+    for frames in (frames_l, frames_r):
+        assert frames[2].keypoints[15].manual is False
+        assert frames[3].keypoints[15].manual is False
+    page.shutdown()

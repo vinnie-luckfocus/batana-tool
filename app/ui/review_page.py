@@ -362,10 +362,15 @@ class ReviewPage(QWidget):
         self.chk_simplify.setChecked(self.settings.simplify_hands)
         self.chk_simplify.setToolTip("隐藏小指/食指/拇指细节点，仅手腕可编辑（数据仍保留 33 点全量）")
         self.chk_simplify.toggled.connect(self._on_simplify_toggled)
+        self.chk_link_eyes = QCheckBox("双目联动")
+        self.chk_link_eyes.setChecked(self.settings.link_eyes)
+        self.chk_link_eyes.setToolTip("拖动一目关键点后，另一目同点施加相同位移；传播时联动目一并传播（仅覆盖另一目未人工修正的点）")
+        self.chk_link_eyes.toggled.connect(self._on_link_eyes_toggled)
         self.btn_save_pose = QPushButton("保存骨架")
         self.btn_save_pose.clicked.connect(self.save_pose)
         pose_row2.addWidget(self.chk_pose)
         pose_row2.addWidget(self.chk_simplify)
+        pose_row2.addWidget(self.chk_link_eyes)
         pose_row2.addWidget(self.btn_save_pose)
         pose_box.addLayout(pose_row2)
         self.player.set_simplify_hands(self.chk_simplify.isChecked())
@@ -779,9 +784,22 @@ class ReviewPage(QWidget):
         self.settings.simplify_hands = on
         self.settings.save()
 
+    def _on_simplify_toggled(self, on: bool) -> None:
+        """简化手部开关：即时生效并持久化（数据始终保留 33 点全量）。"""
+        self.player.set_simplify_hands(on)
+        self.settings.simplify_hands = on
+        self.settings.save()
+
+    def _on_link_eyes_toggled(self, on: bool) -> None:
+        """双目联动开关：即时生效并持久化。"""
+        self.settings.link_eyes = on
+        self.settings.save()
+
     def correct_keypoint(self, kp_idx: int, x: float, y: float, eye: str | None = None) -> None:
         """拖动落点：调核心 PoseFrame.correct 落账（保留自动原值）。
 
+        双目联动（设置可关）：另一目同帧同点若为自动点，施加相同位移并入同一撤销批；
+        另一目已人工修正的点不动（人工结果优先）。
         eye 缺省为当前查看目（双目并排时由 PlayerWidget 信号显式给出）。
         """
         eye = eye or (self._pose_eye if self._pose_eye in ("left", "right") else "left")
@@ -789,8 +807,20 @@ class ReviewPage(QWidget):
         if frames is None or not (0 <= self._frame_pos < len(frames)):
             return
         frame = frames[self._frame_pos]
+        old = frame.keypoints[kp_idx]
+        dx, dy = x - old.x, y - old.y
         frame.correct(kp_idx, x, y)
-        self._undo_stack.append([(self._frame_pos, kp_idx, eye)])
+        batch = [(self._frame_pos, kp_idx, eye)]
+        # 双目联动：另一目同点随动（相对位移近似成立——同一动作的左右视角）
+        if self.settings.link_eyes:
+            other = "right" if eye == "left" else "left"
+            other_frames = self._frames_for_eye(other)
+            if other_frames is not None and self._frame_pos < len(other_frames):
+                okp = other_frames[self._frame_pos].keypoints[kp_idx]
+                if not okp.manual:  # 另一目人工点不动
+                    other_frames[self._frame_pos].correct(kp_idx, okp.x + dx, okp.y + dy)
+                    batch.append((self._frame_pos, kp_idx, other))
+        self._undo_stack.append(batch)
         self._last_corrected_kp = kp_idx
         self._last_corrected_eye = eye
         self._pose_eye = eye  # 最近编辑目（重跑单帧/保存标注归属）
@@ -801,7 +831,8 @@ class ReviewPage(QWidget):
     def propagate_correction(self, direction: int = 1) -> int:
         """把最近修正点的偏移量向后续/之前帧传播（连续错位一键修正）。
 
-        作用于最近修正目（双目并排时拖动哪目就传播哪目）。
+        作用于最近修正目；双目联动开启时，另一目在当前帧有修正量（联动随动产生）
+        则一并按自身偏移量传播——一次拖动+一次传播修好双目。
         覆盖规则：传播覆盖路径上所有帧（含旧的人工/传播修正），唯一停止条件是
         检测恢复——原始自动值高置信 ≥0.5 且与错位源点 L1 位移 > 容差，或到片段末尾。
         这样重新载入素材后，旧的传播结果（落盘为 manual）也能被再次传播修正。
@@ -809,7 +840,8 @@ class ReviewPage(QWidget):
         从源帧的完整偏移线性降到接近 0，缓解常量偏移在长路径上的累积偏离；
         找不到恢复帧（错位一直延续到片段边界）时保持常量偏移。
         恢复判定一律基于原始自动值（修正帧的 x/visibility 已被改写）。
-        整批一次撤销可回退；传播后视图跳到最后一帧以便继续。返回传播帧数。
+        整批一次撤销可回退（双目联动时两目同批）；传播后视图跳到最后一帧以便继续。
+        返回传播帧数（双目联动时为两目合计）。
         """
         eye = self._last_corrected_eye
         frames = self._frames_for_eye(eye)
@@ -821,48 +853,66 @@ class ReviewPage(QWidget):
         if not src.manual or src.auto is None:
             self.status_line.setText("当前帧该点无修正量可传播（请先在本帧拖动修正）")
             return 0
-        dx, dy = src.x - src.auto["x"], src.y - src.auto["y"]
-        ax, ay = src.auto["x"], src.auto["y"]
-        n = len(frames)
 
-        def _auto_of(f: int) -> tuple[float, float, float]:
-            kp = frames[f].keypoints[idx]
-            if kp.manual and kp.auto is not None:
-                return kp.auto["x"], kp.auto["y"], kp.auto["visibility"]
-            return kp.x, kp.y, kp.visibility
+        # 传播任务：每目按自身源帧修正量（auto 基准各自独立）
+        jobs: list[tuple[str, list, float, float, float, float]] = []
+        jobs.append((eye, frames, src.x - src.auto["x"], src.y - src.auto["y"],
+                     src.auto["x"], src.auto["y"]))
+        if self.settings.link_eyes:
+            other = "right" if eye == "left" else "left"
+            oframes = self._frames_for_eye(other)
+            if oframes is not None and self._frame_pos < len(oframes):
+                osrc = oframes[self._frame_pos].keypoints[idx]
+                if osrc.manual and osrc.auto is not None:
+                    jobs.append((other, oframes, osrc.x - osrc.auto["x"],
+                                 osrc.y - osrc.auto["y"],
+                                 osrc.auto["x"], osrc.auto["y"]))
 
-        def _recovered(f: int) -> bool:
-            ox, oy, ovis = _auto_of(f)
-            return ovis >= 0.5 and abs(ox - ax) + abs(oy - ay) > self.PROPAGATE_RECOVER_TOL
+        batch: list[tuple[int, int, str]] = []
+        per_eye: dict[str, int] = {}
+        for jeye, jframes, dx, dy, ax, ay in jobs:
+            n = len(jframes)
 
-        # 第一趟：扫描定位恢复帧 R（不含源帧方向上的越界）
-        path: list[int] = []
-        f = self._frame_pos + direction
-        recovered = False
-        while 0 <= f < n:
-            if _recovered(f):
-                recovered = True
-                break
-            path.append(f)
-            f += direction
-        if not path:
+            def _auto_of(f: int, jframes=jframes) -> tuple[float, float, float]:
+                kp = jframes[f].keypoints[idx]
+                if kp.manual and kp.auto is not None:
+                    return kp.auto["x"], kp.auto["y"], kp.auto["visibility"]
+                return kp.x, kp.y, kp.visibility
+
+            def _recovered(f: int, ax=ax, ay=ay) -> bool:
+                ox, oy, ovis = _auto_of(f)
+                return ovis >= 0.5 and abs(ox - ax) + abs(oy - ay) > self.PROPAGATE_RECOVER_TOL
+
+            # 第一趟：扫描定位恢复帧 R（不含源帧方向上的越界）
+            path: list[int] = []
+            f = self._frame_pos + direction
+            recovered = False
+            while 0 <= f < n:
+                if _recovered(f):
+                    recovered = True
+                    break
+                path.append(f)
+                f += direction
+            # 第二趟：应用修正，找到恢复帧时偏移量线性衰减
+            k = len(path)
+            for j, fp in enumerate(path, start=1):
+                w = (k - j + 1) / k if recovered else 1.0
+                ox, oy, _ = _auto_of(fp)
+                jframes[fp].correct(idx, ox + dx * w, oy + dy * w)
+                batch.append((fp, idx, jeye))
+            per_eye[jeye] = len(path)
+        if not batch:
             self.status_line.setText("没有需要传播的帧（相邻帧该点已恢复或已到片段边界）")
             return 0
-        # 第二趟：应用修正，找到恢复帧时偏移量线性衰减
-        k = len(path)
-        batch: list[tuple[int, int, str]] = []
-        for j, fp in enumerate(path, start=1):
-            w = (k - j + 1) / k if recovered else 1.0
-            ox, oy, _ = _auto_of(fp)
-            frames[fp].correct(idx, ox + dx * w, oy + dy * w)
-            batch.append((fp, idx, eye))
         self._undo_stack.append(batch)
         self._pose_dirty = True
         which = "后续" if direction > 0 else "之前"
-        eye_label = "左目" if eye == "left" else "右目"
+        counts = "+".join(
+            f"{'左目' if e == 'left' else '右目'}{c}帧" for e, c in per_eye.items() if c
+        )
         self.label_pose.set_value(f"已传播 {len(batch)} 帧（未保存）")
         self.status_line.setText(
-            f"{eye_label}·{KEYPOINT_LABELS_CN[idx]} 修正量已传播到{which} {len(batch)} 帧"
+            f"{KEYPOINT_LABELS_CN[idx]} 修正量已传播到{which} {counts}"
             f"（帧 {batch[0][0]}–{batch[-1][0]}，已跳到末帧检查）"
         )
         # 跳到传播末帧：所见即所得，便于检查边界并继续下一段修正

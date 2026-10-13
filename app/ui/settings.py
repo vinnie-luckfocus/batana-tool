@@ -57,6 +57,9 @@ class AppSettings:
     pose_model_path: str = ""
     # F8 简化手部：隐藏 pinky/index/thumb 细节点，仅手腕可编辑（数据仍 33 点全量）
     simplify_hands: bool = True
+    # F8 双目联动：拖动一目关键点后，另一目同点施加相同位移（双目是同一动作的两视角，
+    # 错位通常双目共振）；联动只覆盖另一目未人工修正的点，人工点不动
+    link_eyes: bool = True
     # F10 导出校验：batana-core 仓路径（空 = 自动探测常见位置）
     core_repo_path: str = ""
     # F11 环境检查（阈值默认值见 app/envcheck/defaults.py，设置页可调）
