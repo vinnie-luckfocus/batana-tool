@@ -770,3 +770,68 @@ def test_link_eyes_propagate_covers_both_eyes(qapp, settings, store):
         assert frames[2].keypoints[15].manual is False
         assert frames[3].keypoints[15].manual is False
     page.shutdown()
+
+
+# ---- 双目骨架推理：每目独立估计器实例（2026-10-13 实机修复）----
+
+
+def test_pose_worker_factory_creates_per_eye_instances(qapp, settings, store):
+    """双目跑骨架：估计器工厂每目各调用一次（独立实例）。
+
+    回归：MediaPipe VIDEO 模式带时序跟踪状态，双目共用同一实例会让右目从
+    左目末帧的跟踪状态续跑，双目视差导致右目开头数帧骨架整体偏移。
+    """
+    from app.pose import StubPoseEstimator
+    from app.ui.review_page import _PoseWorker
+
+    record = _write_test_clip(store)
+    page = ReviewPage(settings, store)
+    page.load_record(record["session_id"])
+
+    constructed: list[StubPoseEstimator] = []
+
+    def factory() -> StubPoseEstimator:
+        est = StubPoseEstimator()
+        constructed.append(est)
+        return est
+
+    results: dict = {}
+    worker = _PoseWorker(factory, page._player, ["left", "right"],
+                         StubPoseEstimator.model_name)
+    worker.finished_ok.connect(lambda d: results.update(d))
+    worker.run()  # 同步直跑（不 start，无需事件循环）
+
+    assert len(constructed) == 2  # 每目独立实例
+    assert constructed[0] is not constructed[1]
+    assert set(results) == {"left", "right"}
+    assert len(results["left"]) == record["frame_count"]
+    assert len(results["right"]) == record["frame_count"]
+    page.shutdown()
+
+
+def test_run_pose_uses_factory(qapp, settings, store, monkeypatch):
+    """run_pose 端到端：双目模式走工厂构造（_stub 工厂计数），按钮状态恢复。"""
+    from app.pose import StubPoseEstimator
+
+    record = _write_test_clip(store)
+    page = ReviewPage(settings, store)
+    page.load_record(record["session_id"])
+    page.combo_pose_eye.setCurrentIndex(2)  # 双目
+
+    calls = []
+
+    def factory():
+        calls.append(1)
+        return StubPoseEstimator()
+
+    monkeypatch.setattr(
+        page, "_estimator_factory", lambda: (factory, StubPoseEstimator.model_name)
+    )
+    page.run_pose()
+    assert page._pose_worker is not None
+    page._pose_worker.wait(10000)
+    qapp.processEvents()
+    assert len(calls) == 2
+    assert set(page._pose_frames_by_eye) == {"left", "right"}
+    assert page.btn_run_pose.isEnabled()  # worker 完成后按钮恢复
+    page.shutdown()

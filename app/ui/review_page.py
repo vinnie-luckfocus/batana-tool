@@ -83,16 +83,22 @@ def pose_path_for_eye(clip_dir: Path, eye: str) -> Path:
 
 
 class _PoseWorker(QThread):
-    """骨架推理线程（PRD F7：后台跑，不阻塞 UI）。支持单目/双目（M2）。"""
+    """骨架推理线程（PRD F7：后台跑，不阻塞 UI）。支持单目/双目（M2）。
+
+    估计器以工厂传入、每目各建独立实例：MediaPipe VIDEO 模式带时序跟踪状态，
+    双目共用同一实例会让右目从左目末帧的跟踪状态续跑——双目视差使人物整体
+    平移，右目开头数帧骨架因此偏移（跟踪收敛后才恢复）。每目全新实例可根治。
+    """
 
     progressed = Signal(int, int)   # (已完成, 总数)
     finished_ok = Signal(object)    # dict[eye, list[PoseFrame]]
     failed = Signal(str)
 
-    def __init__(self, estimator: PoseEstimator, player: ClipPlayer, eyes: list[str]) -> None:
+    def __init__(self, estimator_factory, player: ClipPlayer, eyes: list[str],
+                 model_name: str = "") -> None:
         super().__init__()
-        self._estimator = estimator
-        self.model_name = estimator.model_name
+        self._factory = estimator_factory
+        self.model_name = model_name
         self._player = player
         self._eyes = eyes
 
@@ -102,24 +108,26 @@ class _PoseWorker(QThread):
             done = 0
             frames_by_eye: dict[str, list[PoseFrame]] = {}
             for eye in self._eyes:
-                frames: list[PoseFrame] = []
-                for i in range(self._player.frame_count):
-                    if self.isInterruptionRequested():
-                        return
-                    gray = self._player.frame(i, eye)
-                    if gray is None:
-                        continue
-                    ts_ms = i / self._player.fps * 1000.0
-                    frames.append(self._estimator.estimate(gray, i, ts_ms))
-                    done += 1
-                    if done % 10 == 0:
-                        self.progressed.emit(done, total)
-                frames_by_eye[eye] = frames
+                estimator = self._factory()  # 每目全新实例（时序跟踪不跨目）
+                try:
+                    frames: list[PoseFrame] = []
+                    for i in range(self._player.frame_count):
+                        if self.isInterruptionRequested():
+                            return
+                        gray = self._player.frame(i, eye)
+                        if gray is None:
+                            continue
+                        ts_ms = i / self._player.fps * 1000.0
+                        frames.append(estimator.estimate(gray, i, ts_ms))
+                        done += 1
+                        if done % 10 == 0:
+                            self.progressed.emit(done, total)
+                    frames_by_eye[eye] = frames
+                finally:
+                    estimator.close()
             self.finished_ok.emit(frames_by_eye)
         except Exception as e:
             self.failed.emit(str(e))
-        finally:
-            self._estimator.close()
 
 
 class _ExportWorker(QThread):
@@ -726,11 +734,12 @@ class ReviewPage(QWidget):
 
     # ---- 骨架 ----
 
-    def _make_estimator(self) -> PoseEstimator | None:
-        """按设置构建估计器：配置路径 → 默认模型目录自动探测 → Stub 兜底（明确提示）。
+    def _estimator_factory(self):
+        """按设置判定估计器类型并返回 (工厂, 模型名)：配置路径 → 默认模型目录
+        自动探测 → Stub 兜底（明确提示，弹窗与原 _make_estimator 一致）。
 
-        默认模型目录 ~/.batana-tool/models/*.task：设置留空时自动探测，
-        免去手动配置；Stub 仅作测试兜底，跑真实素材时显式告知。
+        工厂语义：每次调用构造全新实例。双目推理必须每目独立实例——
+        MediaPipe VIDEO 模式的时序跟踪状态跨目续跑会导致右目开头骨架偏移。
         """
         from app.pose import MediaPipePoseEstimator
 
@@ -759,20 +768,25 @@ class ReviewPage(QWidget):
             )
         else:
             try:
-                return MediaPipePoseEstimator(model_path)
+                probe = MediaPipePoseEstimator(model_path)  # 试构造验证可用性
+                probe.close()
+                return (lambda: MediaPipePoseEstimator(model_path)), MediaPipePoseEstimator.model_name
             except Exception as e:
                 QMessageBox.warning(self, "骨架初始化失败", f"{e}\n\n回退到 StubPoseEstimator。")
-        return StubPoseEstimator()
+        return StubPoseEstimator, StubPoseEstimator.model_name
+
+    def _make_estimator(self) -> PoseEstimator | None:
+        """构建单个估计器（重跑单帧用）：判定逻辑同 _estimator_factory。"""
+        factory, _name = self._estimator_factory()
+        return factory()
 
     def run_pose(self) -> None:
         """整段跑骨架（后台线程），目别由下拉选择（左/右/双）。"""
         if self._player is None or self._pose_worker is not None:
             return
-        estimator = self._make_estimator()
-        if estimator is None:
-            return
+        factory, model_name = self._estimator_factory()
         eyes = _POSE_EYE_OPTIONS[self.combo_pose_eye.currentIndex()][1]
-        self._pose_worker = _PoseWorker(estimator, self._player, eyes)
+        self._pose_worker = _PoseWorker(factory, self._player, eyes, model_name)
         self._pose_worker.progressed.connect(
             lambda done, total: self.label_pose.set_value(f"推理 {done}/{total}")
         )
