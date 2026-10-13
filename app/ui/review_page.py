@@ -173,9 +173,6 @@ class ReviewPage(QWidget):
         self._undo_stack: list[list[tuple[int, int, str]]] = []  # 批 = [(帧位置, 关键点索引, 目), ...]
         self._last_corrected_kp: int | None = None  # 最近修正的关键点（传播修正的源）
         self._last_corrected_eye = "left"           # 最近修正的目（双目并排修正时跟随）
-        # 机器传播产生的点（帧, 点索引, 目）：可被再次传播覆盖；人工拖动后出集合成为边界。
-        # 仅内存态（载入素材/重跑骨架时清空），不落盘——pose2d 契约只有 manual 标记
-        self._propagated: set[tuple[int, int, str]] = set()
         self._pose_dirty = False
         self._trim_dirty = False
         self._pose_worker: _PoseWorker | None = None
@@ -487,7 +484,6 @@ class ReviewPage(QWidget):
         else:
             self._load_pose_for_eye(view_eye)
         self._undo_stack.clear()
-        self._propagated.clear()
         self._last_corrected_kp = None
         self._pose_dirty = False
         self._trim_dirty = False
@@ -739,7 +735,6 @@ class ReviewPage(QWidget):
         if self._pose_worker is not None:
             self._pose_model = self._pose_worker.model_name
         self._pose_fps = self._record["fps"] if self._record else 0.0
-        self._propagated.clear()  # 新骨架全量替换，传播记录失效
         self._last_corrected_kp = None
         self._pose_dirty = True
         counts = "/".join(f"{e}:{len(f)}F" for e, f in frames_by_eye.items())
@@ -772,9 +767,6 @@ class ReviewPage(QWidget):
         ts_ms = self._frame_pos / max(self._record["fps"], 1) * 1000.0
         frames[self._frame_pos] = estimator.estimate(gray, self._frame_pos, ts_ms)
         estimator.close()
-        # 该帧传播记录失效（骨架已被新推理覆盖）
-        for key in [k for k in self._propagated if k[0] == self._frame_pos and k[2] == self._pose_eye]:
-            self._propagated.discard(key)
         self._pose_dirty = True
         self.label_pose.set_value("单帧已重跑（未保存）")
         self._show_frame()
@@ -790,7 +782,6 @@ class ReviewPage(QWidget):
     def correct_keypoint(self, kp_idx: int, x: float, y: float, eye: str | None = None) -> None:
         """拖动落点：调核心 PoseFrame.correct 落账（保留自动原值）。
 
-        人工拖动后该点退出传播集合——成为真正的边界，后续传播到此即停。
         eye 缺省为当前查看目（双目并排时由 PlayerWidget 信号显式给出）。
         """
         eye = eye or (self._pose_eye if self._pose_eye in ("left", "right") else "left")
@@ -800,7 +791,6 @@ class ReviewPage(QWidget):
         frame = frames[self._frame_pos]
         frame.correct(kp_idx, x, y)
         self._undo_stack.append([(self._frame_pos, kp_idx, eye)])
-        self._propagated.discard((self._frame_pos, kp_idx, eye))
         self._last_corrected_kp = kp_idx
         self._last_corrected_eye = eye
         self._pose_eye = eye  # 最近编辑目（重跑单帧/保存标注归属）
@@ -812,10 +802,13 @@ class ReviewPage(QWidget):
         """把最近修正点的偏移量向后续/之前帧传播（连续错位一键修正）。
 
         作用于最近修正目（双目并排时拖动哪目就传播哪目）。
-        覆盖规则：机器传播产生的帧可被再次传播覆盖（基于原始自动值 + 新偏移量）；
-        人工拖动的帧是边界，传播到此即停。
-        恢复判定一律基于原始自动值（传播帧的 x/visibility 已被改写）：
-        高置信 ≥0.5 且与错位源点 L1 位移 > 容差 → 检测已恢复，停止。
+        覆盖规则：传播覆盖路径上所有帧（含旧的人工/传播修正），唯一停止条件是
+        检测恢复——原始自动值高置信 ≥0.5 且与错位源点 L1 位移 > 容差，或到片段末尾。
+        这样重新载入素材后，旧的传播结果（落盘为 manual）也能被再次传播修正。
+        偏移量衰减：先扫描定位恢复帧 R，路径上第 j 帧权重 w=(k-j+1)/k（k 为覆盖帧数），
+        从源帧的完整偏移线性降到接近 0，缓解常量偏移在长路径上的累积偏离；
+        找不到恢复帧（错位一直延续到片段边界）时保持常量偏移。
+        恢复判定一律基于原始自动值（修正帧的 x/visibility 已被改写）。
         整批一次撤销可回退；传播后视图跳到最后一帧以便继续。返回传播帧数。
         """
         eye = self._last_corrected_eye
@@ -831,27 +824,38 @@ class ReviewPage(QWidget):
         dx, dy = src.x - src.auto["x"], src.y - src.auto["y"]
         ax, ay = src.auto["x"], src.auto["y"]
         n = len(frames)
-        batch: list[tuple[int, int, str]] = []
-        f = self._frame_pos + direction
-        while 0 <= f < n:
+
+        def _auto_of(f: int) -> tuple[float, float, float]:
             kp = frames[f].keypoints[idx]
-            if kp.manual and (f, idx, eye) not in self._propagated:
-                break  # 真人工帧：人工边界优先，不覆盖
-            # 原始自动值（恢复判定与偏移基准都以此为准）
             if kp.manual and kp.auto is not None:
-                ox, oy, ovis = kp.auto["x"], kp.auto["y"], kp.auto["visibility"]
-            else:
-                ox, oy, ovis = kp.x, kp.y, kp.visibility
-            moved = abs(ox - ax) + abs(oy - ay)
-            if ovis >= 0.5 and moved > self.PROPAGATE_RECOVER_TOL:
-                break  # 检测已恢复（跳出错位簇）
-            frames[f].correct(idx, ox + dx, oy + dy)
-            self._propagated.add((f, idx, eye))
-            batch.append((f, idx, eye))
+                return kp.auto["x"], kp.auto["y"], kp.auto["visibility"]
+            return kp.x, kp.y, kp.visibility
+
+        def _recovered(f: int) -> bool:
+            ox, oy, ovis = _auto_of(f)
+            return ovis >= 0.5 and abs(ox - ax) + abs(oy - ay) > self.PROPAGATE_RECOVER_TOL
+
+        # 第一趟：扫描定位恢复帧 R（不含源帧方向上的越界）
+        path: list[int] = []
+        f = self._frame_pos + direction
+        recovered = False
+        while 0 <= f < n:
+            if _recovered(f):
+                recovered = True
+                break
+            path.append(f)
             f += direction
-        if not batch:
-            self.status_line.setText("没有需要传播的帧（相邻帧该点已恢复或已人工修正）")
+        if not path:
+            self.status_line.setText("没有需要传播的帧（相邻帧该点已恢复或已到片段边界）")
             return 0
+        # 第二趟：应用修正，找到恢复帧时偏移量线性衰减
+        k = len(path)
+        batch: list[tuple[int, int, str]] = []
+        for j, fp in enumerate(path, start=1):
+            w = (k - j + 1) / k if recovered else 1.0
+            ox, oy, _ = _auto_of(fp)
+            frames[fp].correct(idx, ox + dx * w, oy + dy * w)
+            batch.append((fp, idx, eye))
         self._undo_stack.append(batch)
         self._pose_dirty = True
         which = "后续" if direction > 0 else "之前"
@@ -885,7 +889,6 @@ class ReviewPage(QWidget):
                 kp.visibility = kp.auto["visibility"]
                 kp.manual = False
                 kp.auto = None
-            self._propagated.discard((frame_pos, kp_idx, eye))
         self._pose_dirty = True
         self._frame_pos = batch[0][0]
         self.slider.blockSignals(True)
