@@ -11,11 +11,13 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSlider,
     QStyle,
@@ -23,7 +25,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.calib.nominal import nominal_calibration
+from app.calib.store import load_calibration
 from app.pose import PoseEstimator, PoseFrame, StubPoseEstimator, read_pose2d, write_pose2d
+from app.recon import reconstruct_session, sanity_report
 from app.session import (
     STATUS_FAIL,
     STATUS_PASS,
@@ -149,6 +154,45 @@ class _ExportWorker(QThread):
         self.finished_all.emit((exported, errors, overwritten))
 
 
+class _ReconWorker(QThread):
+    """3D 重建线程：双骨架三角化 + 合理性报告（不阻塞 UI）。"""
+
+    finished_ok = Signal(object)   # (pose3d dict, sanity dict)
+    failed = Signal(str)
+
+    def __init__(self, clip_dir: Path, calib: dict, core_repo: Path,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._clip_dir = clip_dir
+        self._calib = calib
+        self._core_repo = core_repo
+
+    def run(self) -> None:
+        try:
+            pose3d = reconstruct_session(self._clip_dir, self._calib, self._core_repo)
+            self.finished_ok.emit((pose3d, sanity_report(pose3d)))
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+class _ReconReportDialog(QDialog):
+    """3D 重建合理性报告对话框：只读文本，可复制。"""
+
+    def __init__(self, lines: list[str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("3D 重建报告")
+        self.resize(560, 520)
+        layout = QVBoxLayout(self)
+        text = QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText("\n".join(lines))
+        text.setFont(mono_font(12))
+        layout.addWidget(text, stretch=1)
+        btn = QPushButton("关闭")
+        btn.clicked.connect(self.accept)
+        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+
 class ReviewPage(QWidget):
     """素材审核：筛选列表、逐帧回放、骨架叠加与手动修正、修剪、三段式标记、批量导出。"""
 
@@ -177,9 +221,12 @@ class ReviewPage(QWidget):
         self._trim_dirty = False
         self._pose_worker: _PoseWorker | None = None
         self._export_worker: _ExportWorker | None = None
+        self._recon_worker: _ReconWorker | None = None
+        self._recon_note = ""
         self._speed = 1.0
         self._build_ui()
         self.refresh_list()
+        self._update_recon3d_button()
 
     # ---- UI 组装 ----
 
@@ -335,6 +382,9 @@ class ReviewPage(QWidget):
         self.btn_run_pose.setObjectName("primary")
         self.btn_run_pose.clicked.connect(self.run_pose)
         pose_box.addWidget(self.btn_run_pose)
+        self.btn_recon3d = QPushButton("3D 重建")
+        self.btn_recon3d.clicked.connect(self.run_recon3d)
+        pose_box.addWidget(self.btn_recon3d)
         pose_row = QHBoxLayout()
         self.btn_rerun_frame = QPushButton("重跑单帧")
         self.btn_undo = QPushButton("撤销修正")
@@ -499,6 +549,7 @@ class ReviewPage(QWidget):
         self.slider.setValue(self._frame_pos)
         self._show_frame()
         self.status_line.setText(f"第 {record['seq']:03d} 段已加载")
+        self._update_recon3d_button()
         return True
 
     def _load_pose_for_eye(self, eye: str) -> None:
@@ -966,7 +1017,85 @@ class ReviewPage(QWidget):
         self.status_line.setText("pose2d 骨架已保存")
         self.refresh_list()
         self._restore_list_selection()
+        self._update_recon3d_button()
         return True
+
+    # ---- 3D 重建（双骨架 + 标定 → pose3d） ----
+
+    def _update_recon3d_button(self) -> None:
+        """3D 重建按钮可用性：当前片段双骨架（pose2d.json + pose2d_right.json）齐全才可用。"""
+        tip = ""
+        ok = False
+        if self._recon_worker is not None:
+            tip = "重建中…"
+        elif self._player is None:
+            tip = "先加载素材"
+        else:
+            clip = self._player.clip_dir
+            has_left = (clip / "pose2d.json").is_file()
+            has_right = (clip / "pose2d_right.json").is_file()
+            if not has_left:
+                tip = "缺左目骨架（先跑骨架并保存）"
+            elif not has_right:
+                tip = "缺右目骨架（先在审核页对右目跑骨架并保存）"
+            else:
+                ok = True
+                tip = "双骨架三角化为 pose3d，写入片段目录并弹合理性报告"
+        self.btn_recon3d.setEnabled(ok)
+        self.btn_recon3d.setToolTip(tip)
+
+    def _calib_for_recon(self, clip_dir: Path) -> tuple[dict, str] | None:
+        """标定优先级：已存实测 > 已存名义 > 按片段分辨率自动生成名义（报告标注）。"""
+        calib = load_calibration()
+        if calib is not None:
+            return calib, ""
+        meta_path = clip_dir / "capture_meta.json"
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            w, h = meta["per_eye_resolution"]
+        except Exception:
+            w, h = self.settings.capture_width // 2, self.settings.capture_height
+        return nominal_calibration(int(w), int(h)), "无已存标定，已按片段分辨率自动生成名义标定\n"
+
+    def run_recon3d(self) -> None:
+        """跑 3D 重建（后台线程）并弹合理性报告。"""
+        if self._player is None or self._recon_worker is not None:
+            return
+        core_repo = resolve_core_repo(self.settings.core_repo_path)
+        if core_repo is None:
+            QMessageBox.warning(
+                self, "3D 重建",
+                "batana-core 仓不可用，无法三角化。\n请在设置页配置 CORE 仓路径。",
+            )
+            return
+        clip_dir = self._player.clip_dir
+        calib, note = self._calib_for_recon(clip_dir)
+        self._recon_note = note
+        self._recon_worker = _ReconWorker(clip_dir, calib, core_repo, parent=self)
+        self._recon_worker.finished_ok.connect(self._on_recon_done)
+        self._recon_worker.failed.connect(self._on_recon_failed)
+        self._recon_worker.finished.connect(self._on_recon_worker_finished)
+        self._update_recon3d_button()
+        self.status_line.setText("3D 重建中…")
+        self._recon_worker.start()
+
+    def _on_recon_done(self, result: tuple) -> None:
+        pose3d, report = result
+        lines = []
+        if self._recon_note:
+            lines.append(self._recon_note.rstrip())
+        lines += report["lines"]
+        lines += ["", f"pose3d.json 已写入：{self._player.clip_dir / 'pose3d.json'}"]
+        self.status_line.setText(f"3D 重建完成：{report['verdict']}")
+        _ReconReportDialog(lines, parent=self).exec()
+
+    def _on_recon_failed(self, message: str) -> None:
+        self.status_line.setText("3D 重建失败")
+        QMessageBox.warning(self, "3D 重建失败", message)
+
+    def _on_recon_worker_finished(self) -> None:
+        self._recon_worker = None
+        self._update_recon3d_button()
 
     # ---- 修剪（PRD F9） ----
 
@@ -1046,6 +1175,7 @@ class ReviewPage(QWidget):
         self.store.delete(sid)
         self.refresh_list()
         self._select_next_pending()
+        self._update_recon3d_button()
         self.status_line.setText(f"已删除素材 {sid}")
         return True
 
@@ -1148,6 +1278,7 @@ class ReviewPage(QWidget):
             return export_session(
                 dummy, out_root,
                 pose_frames=pose_frames, pose_model=pose_model,
+                calibration=load_calibration(),  # 有标定（实测或名义）则注入 session.json
                 session_id=record["session_id"], frames=items,
             )
         finally:
@@ -1162,5 +1293,8 @@ class ReviewPage(QWidget):
             self._export_worker.requestInterruption()
             self._export_worker.wait(10000)
             self._export_worker = None
+        if self._recon_worker is not None:
+            self._recon_worker.wait(10000)
+            self._recon_worker = None
         if self._player is not None:
             self._player.close()

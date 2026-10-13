@@ -18,6 +18,7 @@ MacBook + Type-C USB3 双目模组的挥棒素材生产工具：人站上打击�
 - F2 打击区 ROI 配置 · F3 就位检测 · F4 视觉引导（预览画面大号提示，零延迟） · F5 挥棒自动检测分段 · F6 采集会话管理
 - F7 骨架自动标注（MediaPipe 33 点）· F8 骨架叠加审核与手动修正 · F9 片段修剪 · F10 审核标记与 session-schema 导出
 - F11 环境合规主动判定：采集前一键 ~10s 环境体检（光照/频闪/清晰度/背景/水平/构图/帧率/磁盘 8 项，逐项中文整改建议）+ 采集中光照频闪持续监测
+- 相机标定与 3D 重建：设置页抽帧调 batana-core ChArUco 双目标定（或模组规格名义标定冒烟）；审核页双骨架三角化为 pose3d（契约结构，单位米）并出无真值合理性报告（骨长稳定性/深度分布/低置信占比）
 
 ## 边界
 
@@ -39,7 +40,7 @@ python3.12 -m venv .venv
 ```
 
 ```bash
-.venv/bin/pytest                                      # 全部无头测试（125 项，含合成视频端到端与 UI 离屏）
+.venv/bin/pytest                                      # 全部无头测试（171 项，含合成视频端到端与 UI 离屏）
 .venv/bin/python -m app.main --gen-synth out.mkv      # 生成合成双目测试视频（2560x800 SBS，8px 视差）
 .venv/bin/python -m samples.gen_synth out.mkv --fps 120 --cycles 3
 .venv/bin/python -m app.envcheck --source samples/output/synth_swing.mkv --duration 5   # 无头环境体检（F11）
@@ -63,6 +64,8 @@ python3.12 -m venv .venv
 - `app.pose`：`PoseFrame`/`Keypoint`（33 点契约拓扑，`correct()` 手动修正保留自动原值）；`write_pose2d()/read_pose2d()`；`PoseEstimator` protocol + `StubPoseEstimator`（确定性）+ `MediaPipePoseEstimator`（Tasks PoseLandmarker，需下载 `.task` 模型文件）
 - `app.session`：`SessionStore(root)`（index.json 原子落盘、三段式标记 合格/不合格/待复核、修剪、删除、`rebuild()` 崩溃重建、`counts()`）；`export_session(clip, out_root, pose_frames=, ...)`（产出契约目录）；`validate_session_builtin()`（内置必填校验）；`validate_with_core()`（本机存在 batana-core 时调其 `tools/validate_session.py` 全量校验）
 - `app.envcheck`（F11）：8 项纯函数检查（光照/频闪含 FFT 市电特征识别/清晰度/背景干扰/水平/构图/帧率掉帧/磁盘，阈值全参数化见 `defaults.py`）；`EnvironmentChecker(frame_source, roi, settings, report_root)`（`run(duration_s, progress_cb)` 采样并逐项检查，复用 FrameSource 抽象，报告 JSON 落盘 `env_reports/`）；无头 CLI `python -m app.envcheck --source <视频> --duration 10`
+- `app.calib`：`nominal_calibration(width, height)`（模组规格名义标定，基线 120mm，仅冒烟）；`save_calibration()/load_calibration()/calibration_status()`（~/.batana-tool/calibration.json 存档与状态摘要）；`extract_frame_pairs(clip_dir, out_dir)`（均匀抽帧为 left/right 分图）；`run_core_calibration(frames_dir, core_repo, out_json)`（subprocess 调 core ChArUco 双目标定）
+- `app.recon`：`reconstruct_session(clip_dir, calib, core_repo)`（双骨架归一化点 → 像素 → core 批量三角化 → 契约 pose3d，mm→m，写 pose3d.json）；`sanity_report(pose3d)`（骨长帧间变异系数/深度分布/低置信占比 → verdict 与中文报告行）
 
 ### 本机实测结论（2026-09，macOS arm64 + OpenCV 5.0）
 
@@ -81,9 +84,11 @@ app/
 ├── pose/              # PoseFrame 数据模型、pose2d 读写、Stub/MediaPipe 估计器
 ├── voice/             # Voice 抽象、SayVoice、NullVoice、中文文案
 ├── session/           # SessionStore 素材索引、export_session 契约导出与校验
+├── calib/             # 相机标定：名义标定、标定存档、抽帧、core ChArUco 标定调用
+├── recon/             # 3D 重建：双骨架三角化（调 core --batch）+ 无真值合理性报告
 ├── envcheck/          # F11 环境合规检查（8 项纯函数 + EnvironmentChecker + 无头 CLI）
 └── ui/                # 采集页/审核页/设置页 + 设计系统（theme）+ 采集控制器（线程/信号桥）+ EnvCheckDialog
-tests/                 # 125 项无头测试：核心层 59 项 + 环境检查 41 项 + UI 离屏 25 项
+tests/                 # 171 项无头测试：核心层 + 环境检查 + 标定/重建 + UI 离屏
 samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→挥棒→静止，循环）
 ```
 
@@ -96,6 +101,7 @@ samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→�
 
 | 版本 | 日期 | 变更内容 | 同步 |
 | --- | --- | --- | --- |
+| 0.5.0 | 2026-10-13 | 相机标定 + 3D 重建（验证 core 标定/三角化管线）：①app/calib——名义标定（HBVCAM-W2237-2 规格：基线 120mm、f_px≈1200@1280 宽线性缩放、畸变全 0，report.source=nominal-spec 标注估算）、标定存档 ~/.batana-tool/calibration.json（状态摘要区分名义/实测）、片段均匀抽帧、subprocess 调 core ChArUco 双目标定；②app/recon——双骨架（pose2d.json+pose2d_right.json）归一化点还原像素 → core 三角化批量模式 → 契约 pose3d（左目系、单位米、33 点带 name），sanity_report 无真值判据（12 段骨长帧间变异系数/深度 p5/p50/p95/Z>0 比例/低置信占比 → 「链路合理」或异常项）；③设置页「相机标定」区块（状态行 + 抽帧标定/名义标定/清除，后台 QThread 不卡 UI，core 仓不可用禁用）、审核页「3D 重建」按钮（双骨架齐全才可用，报告对话框只读可复制）、导出链路自动注入已存标定；④合成装置端到端实测：标定恢复基线 99.89mm（真值 100mm）、立体 RMS 0.093px，重建误差中位 <0.01mm；新增 14 项测试（合计 171 项全绿）；core 侧 triangulate 新增 --batch 批量模式（40 项全绿） | 待同步司令塔 repos.yaml |
 | 0.4.11 | 2026-10-13 | 双目联动（默认开，审核页可关）：①拖动一目关键点后另一目同帧同点施加相同位移（双目是同一动作两视角，错位通常双目共振），仅覆盖另一目未人工修正的点（人工结果优先），拖动+联动并入同一撤销批；②传播时联动目按自身偏移量一并传播（一次拖动+一次传播修好双目），撤销双目同批回退；新增 2 项联动测试（合计 157 项全绿） | 待同步司令塔 repos.yaml |
 | 0.4.10 | 2026-10-13 | 传播修正三次实机修复（素材#004）：旧传播结果落盘为 manual 后，重新载入素材/重启 app 时内存传播集合已清空，二次传播被自己的旧传播帧挡死（0 帧）。修复：①传播改为覆盖路径上所有帧（含旧人工/传播修正），唯一停止条件是检测恢复或片段边界，移除内存传播集合机制；②新增偏移量线性衰减——先扫描定位恢复帧，路径 k 帧第 j 帧权重 (k-j+1)/k，缓解常量偏移在长路径上的累积偏离（无恢复帧时保持常量）；撤销仍整批回退到原始自动值；重写 2 项旧语义测试 + 新增保存→重新载入→再传播全链路回归测试（合计 155 项全绿） | 待同步司令塔 repos.yaml |
 | 0.4.9 | 2026-10-12 | ①换素材不換骨架修复：双目骨架内存缓存按素材隔离（load_record 清空，此前沿用上一段素材骨架）；②默认采集档位升级 2560x720@120（采集/预览均最高分辨率，用户决策不要低分辨率）：协商失败自动回退 2560x720@60（模组该分辨率实测上限）并回写设置，不再退低分辨率；存量 1280x400 设置自动迁移 + ROI 按单目分辨率（640x400→1280x720）比例缩放；设置页手动改分辨率同样缩放 ROI；新增 2 项回归测试（合计 154 项全绿） | 待同步司令塔 repos.yaml |
