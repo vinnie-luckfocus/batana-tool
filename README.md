@@ -73,6 +73,7 @@ python3.12 -m venv .venv
 - **mediapipe 1.0.1 可用**（Python 3.12）：Tasks `PoseLandmarker` 导入正常；旧 `mp.solutions` API 已移除，实现走 Tasks VIDEO 模式；模型文件需另行下载（`pose_landmarker_lite.task`，见 `app/pose/estimator.py`  docstring 内地址），缺失时构造抛 `FileNotFoundError` 优雅降级
 - **已知问题（2026-09-20 实测）**：mediapipe 1.0.1 的 PoseLandmarker 在 **headless shell 环境（无 WindowServer 连接）**下创建即 Abort（`DrishtiMetalHelper: Service is unavailable`，CPU delegate 与 `MEDIAPIPE_DISABLE_GPU=1` 均无效，QApplication offscreen 亦无效）——macOS 构建的检测计算器无条件初始化 Metal 上下文所致。构造器已加 `delegate="cpu"` 默认参数（规避 GPU 路径的其他不确定性）。**待验证**：打包为 .app bundle（有 Info.plist/GUI 会话）后重试；备选降级路径为 mediapipe 0.10.x `mp.solutions.pose`。当前骨架链路以 Stub 估计器验证，真实推理 smoke 待上述任一环境通过
 - 依赖注意：`pip install mediapipe` 会把 `opencv-python` 换装为 `opencv-contrib-python`（功能超集，FFV1 不受影响）
+- **已知问题（2026-10-14，挂起待修）**：3D 骨架查看器在实机 app 中黑屏。已修并排除的原因：Qt6 中 QOpenGLShader 误从 QtGui 导入被静默吞（v0.6.1 已改 QtOpenGL 导入 + 异常打印留痕）。修复后用探针脚本（QApplication + Skeleton3DDialog 载入素材 005 + grabFramebuffer）验证**出图正常**（骨架与地面网格可见），但用户在 app 内打开仍黑屏——差异点在真实 app 运行路径。待查假设：①实机跑的 app 未更新到 v0.6.1（先确认版本）；②主窗口 NSVisualEffectView 真毛玻璃与 QOpenGLWidget 图层叠加冲突（vibrancy 仅主窗口，对话框未挂，但需验证）；③日志中 `Could not create NSOpenGLContext with shared context, falling back to unshared context` 提示共享上下文创建失败，Qt 全局默认 QSurfaceFormat 与控件 setFormat 不一致时可能拿到非 core 上下文；④多显示器/独显切换。排查入口：实机从终端启动 app（`python -m app.main`）复现黑屏，看 stderr 是否有 initializeGL traceback（v0.6.1 起有留痕），再逐条排除
 
 ### 目录结构
 
