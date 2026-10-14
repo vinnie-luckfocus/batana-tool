@@ -40,7 +40,7 @@ python3.12 -m venv .venv
 ```
 
 ```bash
-.venv/bin/pytest                                      # 全部无头测试（171 项，含合成视频端到端与 UI 离屏）
+.venv/bin/pytest                                      # 全部无头测试（189 项，含合成视频端到端与 UI 离屏）
 .venv/bin/python -m app.main --gen-synth out.mkv      # 生成合成双目测试视频（2560x800 SBS，8px 视差）
 .venv/bin/python -m samples.gen_synth out.mkv --fps 120 --cycles 3
 .venv/bin/python -m app.envcheck --source samples/output/synth_swing.mkv --duration 5   # 无头环境体检（F11）
@@ -88,7 +88,7 @@ app/
 ├── recon/             # 3D 重建：双骨架三角化（调 core --batch）+ 无真值合理性报告
 ├── envcheck/          # F11 环境合规检查（8 项纯函数 + EnvironmentChecker + 无头 CLI）
 └── ui/                # 采集页/审核页/设置页 + 设计系统（theme）+ 采集控制器（线程/信号桥）+ EnvCheckDialog
-tests/                 # 171 项无头测试：核心层 + 环境检查 + 标定/重建 + UI 离屏
+tests/                 # 189 项无头测试：核心层 + 环境检查 + 标定/重建 + 3D 查看器 + UI 离屏
 samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→挥棒→静止，循环）
 ```
 
@@ -101,6 +101,7 @@ samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→�
 
 | 版本 | 日期 | 变更内容 | 同步 |
 | --- | --- | --- | --- |
+| 0.6.0 | 2026-10-14 | 3D 骨架查看器（审核页「查看 3D」）：①app/ui/skeleton3d.py——QOpenGLWidget 手写渲染（3.3 core + 着色器，无第三方 GL 依赖；PySide6 不导出 GL_* 枚举，常量按 GL 规范值内置），33 关节点 + BlazePose 补全连线表（身体侧配色沿用 2D 约定：左橙/右蓝/中线灰，语义色跟随外观）、y=0 地面 0.5m 网格、左目系 y 翻转为显示系 y 朝上（地面高由脚部关键点估计）、拖动旋转/右键平移/滚轮缩放、内置播放（0.25×/0.5×/1× 与审核页走带同档）+ 帧号；②app/ui/skeleton3d_math.py——相机数学与数据转换纯 numpy 无 Qt（OrbitCamera orbit/zoom/pan/lookAt/perspective/project/fit、掩蔽点转 NaN、坐标翻转），可无头单测；③审核页集成——pose3d.json 存在即可开查看器（不必重跑重建）、重建报告对话框加「查看 3D」、走带帧位置单向同步到 3D 视图（外部跟随暂停内置播放，内置播放不回写避免回路）、切素材跟随重载/关闭、删除/shutdown 关闭；GL 资源随上下文 aboutToBeDestroyed 显式释放（防退出崩溃）；修复真机冒烟发现的 PySide6 GL 常量缺失与 Qt 父子树双删警告；新增 12 项测试（相机数学 6 + 数据转换 4 + UI smoke/播放/入口同步 3，GL offscreen 不可用自动 skip；合计 189 项全绿 + 1 skip） | 待同步司令塔 repos.yaml |
 | 0.5.1 | 2026-10-14 | 实机故障修复：①双目跑骨架右目初始骨架偏移——根因是 _PoseWorker 两目共用同一 MediaPipe 估计器实例（VIDEO 模式时序跟踪状态跨目续跑，右目开头从左目末帧位置偏入），改为估计器工厂每目独立实例；②直接 MediaPipe 骨架 3D 重建判「存在异常」无法通过——根因是 MediaPipe 逐帧 2D 抖动 + 双目对应不一致被裸三角化放大（实测 640×400 下 0.26–0.43px 视差抖动 ≈ 每端点 ±50mm 深度噪声）。修复（core 侧 preprocess + 批量模式扩展）：三角化前 5 帧时序中值平滑 + visibility<0.5 掩蔽（pose3d 缺失点写 null/visibility=0，契约约定）+ 极线校正（correctMatches）；sanity_report 改「链路判定 + 精度等级 A/B/C」两维口径——链路判定查系统性错误（深度/Z>0/骨长中位人体区间 + 单段超区间 2 倍即异常），精度等级用鲁棒 CV（MAD÷中位），C 级附升级建议（1280×720 档位 + 实测标定）；真实素材复跑 4 段全部「链路合理」（精度 B×1/C×3，640×400 旧档位），合成端到端仍精度 A；新增 6 项测试（合计 177 项全绿）；core 51 项全绿 | 待同步司令塔 repos.yaml |
 | 0.5.0 | 2026-10-13 | 相机标定 + 3D 重建（验证 core 标定/三角化管线）：①app/calib——名义标定（HBVCAM-W2237-2 规格：基线 120mm、f_px≈1200@1280 宽线性缩放、畸变全 0，report.source=nominal-spec 标注估算）、标定存档 ~/.batana-tool/calibration.json（状态摘要区分名义/实测）、片段均匀抽帧、subprocess 调 core ChArUco 双目标定；②app/recon——双骨架（pose2d.json+pose2d_right.json）归一化点还原像素 → core 三角化批量模式 → 契约 pose3d（左目系、单位米、33 点带 name），sanity_report 无真值判据（12 段骨长帧间变异系数/深度 p5/p50/p95/Z>0 比例/低置信占比 → 「链路合理」或异常项）；③设置页「相机标定」区块（状态行 + 抽帧标定/名义标定/清除，后台 QThread 不卡 UI，core 仓不可用禁用）、审核页「3D 重建」按钮（双骨架齐全才可用，报告对话框只读可复制）、导出链路自动注入已存标定；④合成装置端到端实测：标定恢复基线 99.89mm（真值 100mm）、立体 RMS 0.093px，重建误差中位 <0.01mm；新增 14 项测试（合计 171 项全绿）；core 侧 triangulate 新增 --batch 批量模式（40 项全绿） | 待同步司令塔 repos.yaml |
 | 0.4.11 | 2026-10-13 | 双目联动（默认开，审核页可关）：①拖动一目关键点后另一目同帧同点施加相同位移（双目是同一动作两视角，错位通常双目共振），仅覆盖另一目未人工修正的点（人工结果优先），拖动+联动并入同一撤销批；②传播时联动目按自身偏移量一并传播（一次拖动+一次传播修好双目），撤销双目同批回退；新增 2 项联动测试（合计 157 项全绿） | 待同步司令塔 repos.yaml |

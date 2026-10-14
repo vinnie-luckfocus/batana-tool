@@ -184,9 +184,10 @@ class _ReconWorker(QThread):
 
 
 class _ReconReportDialog(QDialog):
-    """3D 重建合理性报告对话框：只读文本，可复制。"""
+    """3D 重建合理性报告对话框：只读文本，可复制；可带「查看 3D」入口。"""
 
-    def __init__(self, lines: list[str], parent: QWidget | None = None) -> None:
+    def __init__(self, lines: list[str], parent: QWidget | None = None,
+                 on_view3d=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("3D 重建报告")
         self.resize(560, 520)
@@ -196,9 +197,17 @@ class _ReconReportDialog(QDialog):
         text.setPlainText("\n".join(lines))
         text.setFont(mono_font(12))
         layout.addWidget(text, stretch=1)
+        row = QHBoxLayout()
+        if on_view3d is not None:
+            btn_view = QPushButton("查看 3D")
+            btn_view.setObjectName("primary")
+            btn_view.clicked.connect(lambda: (self.accept(), on_view3d()))
+            row.addWidget(btn_view)
+        row.addStretch(1)
         btn = QPushButton("关闭")
         btn.clicked.connect(self.accept)
-        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
+        row.addWidget(btn)
+        layout.addLayout(row)
 
 
 class ReviewPage(QWidget):
@@ -231,6 +240,7 @@ class ReviewPage(QWidget):
         self._export_worker: _ExportWorker | None = None
         self._recon_worker: _ReconWorker | None = None
         self._recon_note = ""
+        self._viewer3d = None  # Skeleton3DDialog（懒创建，随素材切换重载/关闭）
         self._speed = 1.0
         self._build_ui()
         self.refresh_list()
@@ -390,9 +400,14 @@ class ReviewPage(QWidget):
         self.btn_run_pose.setObjectName("primary")
         self.btn_run_pose.clicked.connect(self.run_pose)
         pose_box.addWidget(self.btn_run_pose)
+        recon_row = QHBoxLayout()
         self.btn_recon3d = QPushButton("3D 重建")
         self.btn_recon3d.clicked.connect(self.run_recon3d)
-        pose_box.addWidget(self.btn_recon3d)
+        self.btn_view3d = QPushButton("查看 3D")
+        self.btn_view3d.clicked.connect(self.open_3d_viewer)
+        recon_row.addWidget(self.btn_recon3d)
+        recon_row.addWidget(self.btn_view3d)
+        pose_box.addLayout(recon_row)
         pose_row = QHBoxLayout()
         self.btn_rerun_frame = QPushButton("重跑单帧")
         self.btn_undo = QPushButton("撤销修正")
@@ -557,6 +572,15 @@ class ReviewPage(QWidget):
         self.slider.setValue(self._frame_pos)
         self._show_frame()
         self.status_line.setText(f"第 {record['seq']:03d} 段已加载")
+        # 3D 查看器跟随素材：新片段有 pose3d 则重载，否则关闭
+        if self._viewer3d is not None:
+            pose3d_path = self._player.clip_dir / "pose3d.json"
+            if pose3d_path.is_file():
+                from app.ui.skeleton3d import load_pose3d
+                self._viewer3d.load_pose3d(load_pose3d(pose3d_path), record["fps"])
+                self._viewer3d.sync_frame(self._frame_pos)
+            else:
+                self._close_3d_viewer()
         self._update_recon3d_button()
         return True
 
@@ -688,6 +712,9 @@ class ReviewPage(QWidget):
             self.player.set_frame_data(gray, pose_at(self._frames_for_eye(eye)))
         total = self._record["frame_count"]
         self.label_frame.setText(f"帧 {self._frame_pos:04d}/{total - 1:04d}")
+        # 3D 查看器帧同步（单向：审核页 → 查看器）
+        if self._viewer3d is not None:
+            self._viewer3d.sync_frame(self._frame_pos)
 
     def step(self, delta: int) -> None:
         if self._record is None:
@@ -1057,6 +1084,40 @@ class ReviewPage(QWidget):
                 tip = "双骨架三角化为 pose3d，写入片段目录并弹合理性报告"
         self.btn_recon3d.setEnabled(ok)
         self.btn_recon3d.setToolTip(tip)
+        # 「查看 3D」：片段目录已有 pose3d.json 即可打开（无需重新跑重建）
+        has_3d = self._player is not None and (self._player.clip_dir / "pose3d.json").is_file()
+        self.btn_view3d.setEnabled(has_3d)
+        self.btn_view3d.setToolTip(
+            "打开 3D 骨架查看器（随走带帧同步）" if has_3d
+            else "本片段还没有 pose3d.json（先跑「3D 重建」）"
+        )
+
+    def open_3d_viewer(self) -> bool:
+        """打开（或前置）3D 骨架查看器，载入当前片段 pose3d.json 并同步当前帧。"""
+        if self._player is None or self._record is None:
+            return False
+        pose3d_path = self._player.clip_dir / "pose3d.json"
+        if not pose3d_path.is_file():
+            self.status_line.setText("本片段还没有 pose3d.json（先跑「3D 重建」）")
+            return False
+        from app.ui.skeleton3d import Skeleton3DDialog, load_pose3d
+
+        if self._viewer3d is None:
+            # 不挂 Qt 父子树：独立顶层窗口，关闭生命周期由本类显式管理，
+            # 避免父部件销毁与 Python GC 双删（shared QObject deleted directly）
+            self._viewer3d = Skeleton3DDialog()
+            self._viewer3d.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self._viewer3d.load_pose3d(load_pose3d(pose3d_path), self._record["fps"])
+        self._viewer3d.sync_frame(self._frame_pos)
+        self._viewer3d.show()
+        self._viewer3d.raise_()
+        self._viewer3d.activateWindow()
+        return True
+
+    def _close_3d_viewer(self) -> None:
+        if self._viewer3d is not None:
+            self._viewer3d.close()
+            self._viewer3d = None
 
     def _calib_for_recon(self, clip_dir: Path) -> tuple[dict, str] | None:
         """标定优先级：已存实测 > 已存名义 > 按片段分辨率自动生成名义（报告标注）。"""
@@ -1101,7 +1162,8 @@ class ReviewPage(QWidget):
         lines += report["lines"]
         lines += ["", f"pose3d.json 已写入：{self._player.clip_dir / 'pose3d.json'}"]
         self.status_line.setText(f"3D 重建完成：{report['verdict']}")
-        _ReconReportDialog(lines, parent=self).exec()
+        self._update_recon3d_button()  # pose3d.json 落盘后「查看 3D」可用
+        _ReconReportDialog(lines, parent=self, on_view3d=self.open_3d_viewer).exec()
 
     def _on_recon_failed(self, message: str) -> None:
         self.status_line.setText("3D 重建失败")
@@ -1189,6 +1251,7 @@ class ReviewPage(QWidget):
         self.store.delete(sid)
         self.refresh_list()
         self._select_next_pending()
+        self._close_3d_viewer()
         self._update_recon3d_button()
         self.status_line.setText(f"已删除素材 {sid}")
         return True
@@ -1300,6 +1363,7 @@ class ReviewPage(QWidget):
 
     def shutdown(self) -> None:
         self.stop_play()
+        self._close_3d_viewer()
         if self._pose_worker is not None:
             self._pose_worker.requestInterruption()
             self._pose_worker.wait(3000)
