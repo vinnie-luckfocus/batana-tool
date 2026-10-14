@@ -142,8 +142,13 @@ class Skeleton3DWidget(QOpenGLWidget):
     # ---- GL ----
 
     def initializeGL(self) -> None:  # noqa: N802
-        from PySide6.QtGui import QOpenGLShader, QOpenGLShaderProgram
-        from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLVertexArrayObject
+        # Qt6 中着色器/缓冲类均在 QtOpenGL 模块（QtGui 不再导出 QOpenGLShader）
+        from PySide6.QtOpenGL import (
+            QOpenGLBuffer,
+            QOpenGLShader,
+            QOpenGLShaderProgram,
+            QOpenGLVertexArrayObject,
+        )
 
         try:
             program = QOpenGLShaderProgram()
@@ -165,6 +170,9 @@ class Skeleton3DWidget(QOpenGLWidget):
             self.context().aboutToBeDestroyed.connect(self._cleanup_gl)
             self._gl_ok = True
         except Exception:
+            import traceback
+            # 静默吞异常会让用户面对黑屏无任何线索——必须留痕
+            traceback.print_exc()
             self._gl_ok = False
             self._program = None
 
