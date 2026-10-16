@@ -36,3 +36,18 @@ def read_pose2d(path: str | Path) -> tuple[str, float, list[PoseFrame]]:
         float(data["frame_rate"]),
         [PoseFrame.from_dict(f) for f in data.get("frames", [])],
     )
+
+
+def merge_pose_frames(
+    existing: list[PoseFrame],
+    new: list[PoseFrame],
+) -> list[PoseFrame]:
+    """按 frame_index 合并两段骨架：new 覆盖同帧号的旧数据，其余保留。
+
+    用于范围跑骨架（仅 trim 段）：范围外已有骨架数据保留，范围内用新推理结果；
+    返回按 frame_index 排序的列表（可能稀疏——范围外无数据的帧仍无骨架）。
+    """
+    by_index = {f.frame_index: f for f in existing}
+    for f in new:
+        by_index[f.frame_index] = f
+    return [by_index[k] for k in sorted(by_index)]

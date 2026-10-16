@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from app.calib.nominal import nominal_calibration
 from app.calib.store import load_calibration
 from app.pose import PoseEstimator, PoseFrame, StubPoseEstimator, read_pose2d, write_pose2d
+from app.pose.io import merge_pose_frames
 from app.recon import reconstruct_session, sanity_report
 from app.session import (
     STATUS_FAIL,
@@ -95,23 +96,29 @@ class _PoseWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, estimator_factory, player: ClipPlayer, eyes: list[str],
-                 model_name: str = "") -> None:
+                 model_name: str = "", frame_range: tuple[int, int] | None = None) -> None:
         super().__init__()
         self._factory = estimator_factory
         self.model_name = model_name
         self._player = player
         self._eyes = eyes
+        # 帧范围（闭区间，None = 整段）：仅推理范围内帧，范围外数据由调用方合并保留
+        self._range = frame_range
 
     def run(self) -> None:
         try:
-            total = self._player.frame_count * len(self._eyes)
+            first, last = self._range or (0, self._player.frame_count - 1)
+            first = max(0, first)
+            last = min(self._player.frame_count - 1, last)
+            indices = list(range(first, last + 1))
+            total = len(indices) * len(self._eyes)
             done = 0
             frames_by_eye: dict[str, list[PoseFrame]] = {}
             for eye in self._eyes:
                 estimator = self._factory()  # 每目全新实例（时序跟踪不跨目）
                 try:
                     frames: list[PoseFrame] = []
-                    for i in range(self._player.frame_count):
+                    for i in indices:
                         if self.isInterruptionRequested():
                             return
                         gray = self._player.frame(i, eye)
@@ -245,6 +252,7 @@ class ReviewPage(QWidget):
         self._build_ui()
         self.refresh_list()
         self._update_recon3d_button()
+        self._update_training_button()
 
     # ---- UI 组装 ----
 
@@ -378,9 +386,17 @@ class ReviewPage(QWidget):
         self.label_trim = QLabel("[--, --]")
         self.label_trim.setFont(mono_font(12))
         trim_box.addWidget(self.label_trim)
+        self.btn_trim_suggest = QPushButton("挥棒段建议")
+        self.btn_trim_suggest.setToolTip("按触发帧与腕肘速度自动建议挥棒段窗口，写入 trim（可再手动微调）")
+        self.btn_trim_suggest.clicked.connect(self.suggest_trim)
+        trim_box.addWidget(self.btn_trim_suggest)
         self.btn_trim_save = QPushButton("保存修剪")
         self.btn_trim_save.clicked.connect(self.save_trim)
         trim_box.addWidget(self.btn_trim_save)
+        self.btn_export_training = QPushButton("导出训练包")
+        self.btn_export_training.setToolTip("导出 trim 段双目 PNG 帧 + 骨架标注（供 core 微调姿态模型）")
+        self.btn_export_training.clicked.connect(self.export_training)
+        trim_box.addWidget(self.btn_export_training)
         trim_box.addStretch(1)
         ops_layout.addLayout(trim_box, stretch=1)
 
@@ -396,6 +412,15 @@ class ReviewPage(QWidget):
         pose_eye_row.addWidget(pose_eye_label)
         pose_eye_row.addWidget(self.combo_pose_eye, stretch=1)
         pose_box.addLayout(pose_eye_row)
+        pose_range_row = QHBoxLayout()
+        pose_range_label = QLabel("范围")
+        pose_range_label.setObjectName("dim")
+        self.combo_pose_range = QComboBox()
+        self.combo_pose_range.addItems(["整段", "仅 trim 段"])
+        self.combo_pose_range.setToolTip("仅 trim 段：只推理修剪区间内帧，范围外已有骨架保留")
+        pose_range_row.addWidget(pose_range_label)
+        pose_range_row.addWidget(self.combo_pose_range, stretch=1)
+        pose_box.addLayout(pose_range_row)
         self.btn_run_pose = QPushButton("跑骨架（整段）")
         self.btn_run_pose.setObjectName("primary")
         self.btn_run_pose.clicked.connect(self.run_pose)
@@ -582,6 +607,12 @@ class ReviewPage(QWidget):
             else:
                 self._close_3d_viewer()
         self._update_recon3d_button()
+        # 范围默认：已有非整段 trim 时默认「仅 trim 段」，否则整段
+        trim = record["trim"]
+        self.combo_pose_range.setCurrentIndex(
+            1 if (trim["start_frame"] > 0 or trim["end_frame"] < record["frame_count"] - 1) else 0
+        )
+        self._update_training_button()
         return True
 
     def _load_pose_for_eye(self, eye: str) -> None:
@@ -656,6 +687,18 @@ class ReviewPage(QWidget):
             return self._pose_frames_by_eye[eye]
         return self._pose_frames if eye == self._pose_eye else None
 
+    @staticmethod
+    def _pose_pos_at(frames: list[PoseFrame] | None, frame_index: int) -> int | None:
+        """按视频帧号找骨架列表位置（兼容稠密与范围合并后的稀疏列表）。"""
+        if not frames:
+            return None
+        if 0 <= frame_index < len(frames) and frames[frame_index].frame_index == frame_index:
+            return frame_index
+        for pos, f in enumerate(frames):
+            if f.frame_index == frame_index:
+                return pos
+        return None
+
     def _on_view_eye_changed(self) -> None:
         """切换查看目：单目切目即换该目骨架（含未保存修改，内存字典分目存放，
         不存在串目）；双目并排显示左右目骨架，各自可修正。"""
@@ -696,9 +739,8 @@ class ReviewPage(QWidget):
         eye = self._current_eye()
 
         def pose_at(frames: list[PoseFrame] | None) -> PoseFrame | None:
-            if frames and 0 <= self._frame_pos < len(frames):
-                return frames[self._frame_pos]
-            return None
+            pos = self._pose_pos_at(frames, self._frame_pos)
+            return frames[pos] if pos is not None else None
 
         if eye == "dual":
             self.player.set_frame_data_dual(
@@ -808,12 +850,17 @@ class ReviewPage(QWidget):
         return factory()
 
     def run_pose(self) -> None:
-        """整段跑骨架（后台线程），目别由下拉选择（左/右/双）。"""
+        """跑骨架（后台线程），目别由下拉选择（左/右/双），范围可选整段/仅 trim 段。"""
         if self._player is None or self._pose_worker is not None:
             return
         factory, model_name = self._estimator_factory()
         eyes = _POSE_EYE_OPTIONS[self.combo_pose_eye.currentIndex()][1]
-        self._pose_worker = _PoseWorker(factory, self._player, eyes, model_name)
+        frame_range = None
+        if self.combo_pose_range.currentIndex() == 1 and self._record is not None:
+            trim = self._record["trim"]
+            frame_range = (trim["start_frame"], trim["end_frame"])
+        self._pose_worker = _PoseWorker(factory, self._player, eyes, model_name,
+                                        frame_range=frame_range)
         self._pose_worker.progressed.connect(
             lambda done, total: self.label_pose.set_value(f"推理 {done}/{total}")
         )
@@ -824,11 +871,16 @@ class ReviewPage(QWidget):
         self._pose_worker.start()
 
     def _on_pose_done(self, frames_by_eye: dict) -> None:
-        self._pose_frames_by_eye = frames_by_eye
+        # 按 frame_index 合并：范围跑骨架时范围外已有数据保留，另一目未跑的数据也保留
+        for eye, frames in frames_by_eye.items():
+            existing = self._pose_frames_by_eye.get(eye, [])
+            self._pose_frames_by_eye[eye] = merge_pose_frames(existing, frames)
         # 编辑目标：优先当前查看目，其次左目
-        eye = self._current_eye() if self._current_eye() in frames_by_eye else "left"
+        eye = self._current_eye()
+        if eye not in self._pose_frames_by_eye:
+            eye = "left" if "left" in self._pose_frames_by_eye else next(iter(self._pose_frames_by_eye))
         self._pose_eye = eye
-        self._pose_frames = frames_by_eye[eye]
+        self._pose_frames = self._pose_frames_by_eye[eye]
         if self._pose_worker is not None:
             self._pose_model = self._pose_worker.model_name
         self._pose_fps = self._record["fps"] if self._record else 0.0
@@ -896,22 +948,24 @@ class ReviewPage(QWidget):
         """
         eye = eye or (self._pose_eye if self._pose_eye in ("left", "right") else "left")
         frames = self._frames_for_eye(eye)
-        if frames is None or not (0 <= self._frame_pos < len(frames)):
+        pos = self._pose_pos_at(frames, self._frame_pos)
+        if pos is None:
             return
-        frame = frames[self._frame_pos]
+        frame = frames[pos]
         old = frame.keypoints[kp_idx]
         dx, dy = x - old.x, y - old.y
         frame.correct(kp_idx, x, y)
-        batch = [(self._frame_pos, kp_idx, eye)]
+        batch = [(pos, kp_idx, eye)]
         # 双目联动：另一目同点随动（相对位移近似成立——同一动作的左右视角）
         if self.settings.link_eyes:
             other = "right" if eye == "left" else "left"
             other_frames = self._frames_for_eye(other)
-            if other_frames is not None and self._frame_pos < len(other_frames):
-                okp = other_frames[self._frame_pos].keypoints[kp_idx]
+            other_pos = self._pose_pos_at(other_frames, self._frame_pos)
+            if other_pos is not None:
+                okp = other_frames[other_pos].keypoints[kp_idx]
                 if not okp.manual:  # 另一目人工点不动
-                    other_frames[self._frame_pos].correct(kp_idx, okp.x + dx, okp.y + dy)
-                    batch.append((self._frame_pos, kp_idx, other))
+                    other_frames[other_pos].correct(kp_idx, okp.x + dx, okp.y + dy)
+                    batch.append((other_pos, kp_idx, other))
         self._undo_stack.append(batch)
         self._last_corrected_kp = kp_idx
         self._last_corrected_eye = eye
@@ -941,7 +995,11 @@ class ReviewPage(QWidget):
             self.status_line.setText("请先拖动修正一个关键点，再传播")
             return 0
         idx = self._last_corrected_kp
-        src = frames[self._frame_pos].keypoints[idx]
+        src_pos = self._pose_pos_at(frames, self._frame_pos)
+        if src_pos is None:
+            self.status_line.setText("当前帧无骨架数据，无法传播")
+            return 0
+        src = frames[src_pos].keypoints[idx]
         if not src.manual or src.auto is None:
             self.status_line.setText("当前帧该点无修正量可传播（请先在本帧拖动修正）")
             return 0
@@ -953,8 +1011,9 @@ class ReviewPage(QWidget):
         if self.settings.link_eyes:
             other = "right" if eye == "left" else "left"
             oframes = self._frames_for_eye(other)
-            if oframes is not None and self._frame_pos < len(oframes):
-                osrc = oframes[self._frame_pos].keypoints[idx]
+            other_pos = self._pose_pos_at(oframes, self._frame_pos)
+            if other_pos is not None:
+                osrc = oframes[other_pos].keypoints[idx]
                 if osrc.manual and osrc.auto is not None:
                     jobs.append((other, oframes, osrc.x - osrc.auto["x"],
                                  osrc.y - osrc.auto["y"],
@@ -964,6 +1023,13 @@ class ReviewPage(QWidget):
         per_eye: dict[str, int] = {}
         for jeye, jframes, dx, dy, ax, ay in jobs:
             n = len(jframes)
+            # trim 边界（已设置修剪时传播到边界停止；默认整段则不受影响）
+            trim = self._record.get("trim") if self._record else None
+            trim_lo = trim["start_frame"] if trim else 0
+            trim_hi = trim["end_frame"] if trim else n - 1
+            jstart = self._pose_pos_at(jframes, self._frame_pos)
+            if jstart is None:
+                continue  # 该目当前帧无骨架数据，跳过
 
             def _auto_of(f: int, jframes=jframes) -> tuple[float, float, float]:
                 kp = jframes[f].keypoints[idx]
@@ -975,11 +1041,14 @@ class ReviewPage(QWidget):
                 ox, oy, ovis = _auto_of(f)
                 return ovis >= 0.5 and abs(ox - ax) + abs(oy - ay) > self.PROPAGATE_RECOVER_TOL
 
-            # 第一趟：扫描定位恢复帧 R（不含源帧方向上的越界）
+            # 第一趟：扫描定位恢复帧 R（不含源帧方向上的越界；trim 边界停止）
             path: list[int] = []
-            f = self._frame_pos + direction
+            f = jstart + direction
             recovered = False
             while 0 <= f < n:
+                fi = jframes[f].frame_index
+                if (direction > 0 and fi > trim_hi) or (direction < 0 and fi < trim_lo):
+                    break  # trim 边界
                 if _recovered(f):
                     recovered = True
                     break
@@ -1008,7 +1077,7 @@ class ReviewPage(QWidget):
             f"（帧 {batch[0][0]}–{batch[-1][0]}，已跳到末帧检查）"
         )
         # 跳到传播末帧：所见即所得，便于检查边界并继续下一段修正
-        self._frame_pos = batch[-1][0]
+        self._frame_pos = self._frames_for_eye(batch[-1][2])[batch[-1][0]].frame_index
         self.slider.blockSignals(True)
         self.slider.setValue(self._frame_pos)
         self.slider.blockSignals(False)
@@ -1059,6 +1128,7 @@ class ReviewPage(QWidget):
         self.refresh_list()
         self._restore_list_selection()
         self._update_recon3d_button()
+        self._update_training_button()
         return True
 
     # ---- 3D 重建（双骨架 + 标定 → pose3d） ----
@@ -1117,6 +1187,7 @@ class ReviewPage(QWidget):
     def _close_3d_viewer(self) -> None:
         if self._viewer3d is not None:
             self._viewer3d.close()
+            self._viewer3d.deleteLater()  # 交 Qt 删除，避免 Python 直删共享 QObject 警告
             self._viewer3d = None
 
     def _calib_for_recon(self, clip_dir: Path) -> tuple[dict, str] | None:
@@ -1183,9 +1254,47 @@ class ReviewPage(QWidget):
             trim["start_frame"] = min(self._frame_pos, trim["end_frame"])
         else:
             trim["end_frame"] = max(self._frame_pos, trim["start_frame"])
-        self._record["trim"] = trim
+        self._apply_trim(trim["start_frame"], trim["end_frame"])
+
+    def _apply_trim(self, start: int, end: int) -> None:
+        """trim 统一更新路径（手动设点与挥棒段建议共用）：写 record + 脏标志 + 标签。"""
+        self._record["trim"] = {"start_frame": int(start), "end_frame": int(end)}
         self._trim_dirty = True
-        self.label_trim.setText(f"[{trim['start_frame']}, {trim['end_frame']}]")
+        self.label_trim.setText(f"[{start}, {end}]")
+
+    def suggest_trim(self) -> None:
+        """挥棒段建议：触发帧锚定 + 腕肘速度精修，写入 trim（可再手动微调后保存）。"""
+        if self._record is None or self._player is None:
+            return
+        from app.detect.swing_window import suggest_swing_window
+
+        record = self._record
+        clip = self._player.clip_dir
+        resolution = (self.settings.capture_width // 2, self.settings.capture_height)
+        meta_path = clip / "capture_meta.json"
+        if meta_path.is_file():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.get("per_eye_resolution"):
+                resolution = tuple(meta["per_eye_resolution"])
+        # 左目骨架：内存优先，其次磁盘（速度精修用；没有则退化为纯触发帧/整段）
+        frames = self._frames_for_eye("left")
+        if frames is None and (clip / "pose2d.json").is_file():
+            _model, _fps, frames = read_pose2d(clip / "pose2d.json")
+        win = suggest_swing_window(
+            record["frame_count"], record["fps"],
+            trigger_idx=record.get("trigger_idx"),
+            pose_frames=frames, resolution=resolution,
+        )
+        self._apply_trim(win.start, win.end)
+        # 应用后播放头跳到 trim 起点，便于逐帧检查窗口
+        self._frame_pos = win.start
+        self.slider.blockSignals(True)
+        self.slider.setValue(self._frame_pos)
+        self.slider.blockSignals(False)
+        self._show_frame()
+        self.status_line.setText(
+            f"挥棒段建议 [{win.start}, {win.end}]（{win.source}），可微调后「保存修剪」"
+        )
 
     def save_trim(self) -> bool:
         if self._record is None:
@@ -1199,6 +1308,46 @@ class ReviewPage(QWidget):
             f"修剪已保存 [{trim['start_frame']}, {trim['end_frame']}]"
         )
         return True
+
+    # ---- 训练集导出（M-C） ----
+
+    def _update_training_button(self) -> None:
+        """导出训练包按钮：当前片段磁盘上有骨架（任一目）才可用。"""
+        has = False
+        tip = "先加载素材"
+        if self._player is not None:
+            clip = self._player.clip_dir
+            has = (clip / "pose2d.json").is_file() or (clip / "pose2d_right.json").is_file()
+            tip = ("导出 trim 段双目 PNG 帧 + 骨架标注（供 core 微调姿态模型）" if has
+                   else "本片段无骨架数据（先跑骨架并保存）")
+        self.btn_export_training.setEnabled(has)
+        self.btn_export_training.setToolTip(tip)
+
+    def export_training(self) -> None:
+        """导出当前素材训练包到 storage_root/training/<session_id>/。"""
+        if self._record is None or self._player is None:
+            return
+        from app.session.training_export import export_training_pack
+
+        clip = self._player.clip_dir
+        if not ((clip / "pose2d.json").is_file() or (clip / "pose2d_right.json").is_file()):
+            self.status_line.setText("本片段无骨架数据，跳过导出训练包（先跑骨架并保存）")
+            return
+        trim = self._record["trim"]
+        try:
+            out = export_training_pack(
+                clip, self.store.root / "training",
+                (trim["start_frame"], trim["end_frame"]),
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "导出训练包失败", str(e))
+            return
+        n_frames = trim["end_frame"] - trim["start_frame"] + 1
+        self.status_line.setText(f"训练包已导出：{out}")
+        QMessageBox.information(
+            self, "导出训练包",
+            f"已导出 {n_frames} 帧 × 双目（PNG + annotations.json + meta.json）\n{out}",
+        )
 
     # ---- 标记（PRD F10） ----
 
@@ -1253,6 +1402,7 @@ class ReviewPage(QWidget):
         self._select_next_pending()
         self._close_3d_viewer()
         self._update_recon3d_button()
+        self._update_training_button()
         self.status_line.setText(f"已删除素材 {sid}")
         return True
 

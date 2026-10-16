@@ -40,7 +40,7 @@ python3.12 -m venv .venv
 ```
 
 ```bash
-.venv/bin/pytest                                      # 全部无头测试（189 项，含合成视频端到端与 UI 离屏）
+.venv/bin/pytest                                      # 全部无头测试（202 项，含合成视频端到端与 UI 离屏）
 .venv/bin/python -m app.main --gen-synth out.mkv      # 生成合成双目测试视频（2560x800 SBS，8px 视差）
 .venv/bin/python -m samples.gen_synth out.mkv --fps 120 --cycles 3
 .venv/bin/python -m app.envcheck --source samples/output/synth_swing.mkv --duration 5   # 无头环境体检（F11）
@@ -89,7 +89,7 @@ app/
 ├── recon/             # 3D 重建：双骨架三角化（调 core --batch）+ 无真值合理性报告
 ├── envcheck/          # F11 环境合规检查（8 项纯函数 + EnvironmentChecker + 无头 CLI）
 └── ui/                # 采集页/审核页/设置页 + 设计系统（theme）+ 采集控制器（线程/信号桥）+ EnvCheckDialog
-tests/                 # 189 项无头测试：核心层 + 环境检查 + 标定/重建 + 3D 查看器 + UI 离屏
+tests/                 # 202 项无头测试：核心层 + 环境检查 + 标定/重建 + 3D 查看器 + 挥棒段工作流 + UI 离屏
 samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→挥棒→静止，循环）
 ```
 
@@ -102,6 +102,7 @@ samples/gen_synth.py   # 合成双目视频生成器（无人→走入就位→�
 
 | 版本 | 日期 | 变更内容 | 同步 |
 | --- | --- | --- | --- |
+| 0.7.0 | 2026-10-16 | 挥棒段工作流（M-A/M-B/M-C）：①M-A app/detect/swing_window.py——挥棒段建议：触发帧锚定基础窗口 [trig−150ms, trig+400ms]，双腕双肘可见性最高者像素速度 + 5 帧中值平滑做静默边界精修（向前找起点/向后找峰后回落，失败回退基础窗口），无触发帧退化速度峰值法（峰前 350ms/峰后 150ms），无数据整段；审核页修剪区「挥棒段建议」按钮写 trim（与手动同一更新路径，播放头跳起点）；②M-B 跑骨架加范围选择（整段/仅 trim 段，非整段 trim 时默认仅 trim 段），_PoseWorker 支持帧范围，结果按 frame_index 合并（范围外与另一目已有骨架保留），稀疏列表显示/修正/撤销按帧号定位；传播修正在 trim 边界停止；③M-C app/session/training_export.py——训练包导出：trim 段双目 PNG（6 位帧号）+ annotations.json（像素坐标、manual 标记保留、无骨架目写 null）+ meta.json；审核页「导出训练包」按钮（无骨架禁用并提示）；真实素材验证：4 段窗口 [87,167]/[84,168]/[89,168]/[92,170]（trigger=120，速度精修），素材 005 导出 85 帧×2 PNG 结构校验通过；新增 13 项测试（合计 202 项全绿 + 1 GL skip） | 待同步司令塔 repos.yaml |
 | 0.6.1 | 2026-10-14 | 3D 查看器黑屏修复：根因是 Qt6 中 QOpenGLShader/QOpenGLShaderProgram 已移至 PySide6.QtOpenGL 模块，initializeGL 从 QtGui 导入抛 ImportError 且被静默吞掉 → GL 初始化失败只清背景。修复：改从 QtOpenGL 导入；initializeGL 异常改为打印 traceback 留痕（黑屏不再无线索）。真机 GL 渲染验证通过（素材 005：grabFramebuffer 实测非背景像素 >0，骨架+地面网格出图正常，189 项测试全绿） | 待同步司令塔 repos.yaml |
 | 0.6.0 | 2026-10-14 | 3D 骨架查看器（审核页「查看 3D」）：①app/ui/skeleton3d.py——QOpenGLWidget 手写渲染（3.3 core + 着色器，无第三方 GL 依赖；PySide6 不导出 GL_* 枚举，常量按 GL 规范值内置），33 关节点 + BlazePose 补全连线表（身体侧配色沿用 2D 约定：左橙/右蓝/中线灰，语义色跟随外观）、y=0 地面 0.5m 网格、左目系 y 翻转为显示系 y 朝上（地面高由脚部关键点估计）、拖动旋转/右键平移/滚轮缩放、内置播放（0.25×/0.5×/1× 与审核页走带同档）+ 帧号；②app/ui/skeleton3d_math.py——相机数学与数据转换纯 numpy 无 Qt（OrbitCamera orbit/zoom/pan/lookAt/perspective/project/fit、掩蔽点转 NaN、坐标翻转），可无头单测；③审核页集成——pose3d.json 存在即可开查看器（不必重跑重建）、重建报告对话框加「查看 3D」、走带帧位置单向同步到 3D 视图（外部跟随暂停内置播放，内置播放不回写避免回路）、切素材跟随重载/关闭、删除/shutdown 关闭；GL 资源随上下文 aboutToBeDestroyed 显式释放（防退出崩溃）；修复真机冒烟发现的 PySide6 GL 常量缺失与 Qt 父子树双删警告；新增 12 项测试（相机数学 6 + 数据转换 4 + UI smoke/播放/入口同步 3，GL offscreen 不可用自动 skip；合计 189 项全绿 + 1 skip） | 待同步司令塔 repos.yaml |
 | 0.5.1 | 2026-10-14 | 实机故障修复：①双目跑骨架右目初始骨架偏移——根因是 _PoseWorker 两目共用同一 MediaPipe 估计器实例（VIDEO 模式时序跟踪状态跨目续跑，右目开头从左目末帧位置偏入），改为估计器工厂每目独立实例；②直接 MediaPipe 骨架 3D 重建判「存在异常」无法通过——根因是 MediaPipe 逐帧 2D 抖动 + 双目对应不一致被裸三角化放大（实测 640×400 下 0.26–0.43px 视差抖动 ≈ 每端点 ±50mm 深度噪声）。修复（core 侧 preprocess + 批量模式扩展）：三角化前 5 帧时序中值平滑 + visibility<0.5 掩蔽（pose3d 缺失点写 null/visibility=0，契约约定）+ 极线校正（correctMatches）；sanity_report 改「链路判定 + 精度等级 A/B/C」两维口径——链路判定查系统性错误（深度/Z>0/骨长中位人体区间 + 单段超区间 2 倍即异常），精度等级用鲁棒 CV（MAD÷中位），C 级附升级建议（1280×720 档位 + 实测标定）；真实素材复跑 4 段全部「链路合理」（精度 B×1/C×3，640×400 旧档位），合成端到端仍精度 A；新增 6 项测试（合计 177 项全绿）；core 51 项全绿 | 待同步司令塔 repos.yaml |
